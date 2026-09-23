@@ -33,20 +33,26 @@ class KalodataKeywordsCollector(KalodataCollector):
             self.log.info("No keywords to look up yet (watchlist and concepts are empty)")
             return 0
 
-        planned = len(keywords) * len(SEARCHES) * CREDITS_PER_PAGE
-        if planned > kcfg["per_run_credit_cap"]:
-            raise PermanentError(
-                f"{len(keywords)} keywords would cost {planned:.1f} credits, over the "
-                f"per-run cap of {kcfg['per_run_credit_cap']}. Lower max_keywords or raise the cap."
-            )
+        # Look up as many keywords as the per-run cap and the balance allow,
+        # most important first (the list is already in priority order).
+        per_keyword = len(SEARCHES) * CREDITS_PER_PAGE
         balance = self.get_balance()
-        self.log.info("Credit balance: %.2f. Planned for %d keywords (max): %.2f",
-                      balance, len(keywords), planned)
-        if balance - planned < self.cfg["min_balance_reserve"]:
+        spendable = min(kcfg["per_run_credit_cap"], balance - self.cfg["min_balance_reserve"])
+        affordable = max(0, int(spendable / per_keyword + 1e-9))
+        if affordable < len(keywords):
+            self.log.warning(
+                "Credits cover %d of %d keywords this run (balance %.2f, reserve %s, cap %s). "
+                "Top up Kalodata credits to look up the rest.",
+                affordable, len(keywords), balance, self.cfg["min_balance_reserve"],
+                kcfg["per_run_credit_cap"])
+            keywords = keywords[:affordable]
+        if not keywords:
             raise PermanentError(
                 f"Only {balance:.2f} Kalodata credits left; keeping a reserve of "
                 f"{self.cfg['min_balance_reserve']}. Top up credits to continue."
             )
+        self.log.info("Credit balance: %.2f. Looking up %d keywords (max %.1f credits)",
+                      balance, len(keywords), len(keywords) * per_keyword)
 
         common = {"region": self.cfg["region"], "language": "en-US", "currency": "USD",
                   "date_range": "last7Day", "page_size": PAGE_SIZE, "page_number": 1}

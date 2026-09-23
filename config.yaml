@@ -182,7 +182,7 @@ retries:
 # Spending cap per collector per day, in US dollars. A collector stops
 # fetching once the next request would go over its cap (it keeps what it got).
 cost_caps:
-  apify_per_day_usd: 3.00
+  apify_per_day_usd: 15.00
 
 # Logging
 logging:
@@ -190,25 +190,28 @@ logging:
 
 # --- Kalodata keyword search (TikTok Shop saturation per keyword) ---
 # 0.2 credits per keyword (one product search + one video search).
+# Looks up as many keywords as the balance allows (above min_balance_reserve),
+# most important first, and logs how many were skipped.
 kalodata_keywords:
-  max_keywords: 20            # 20 keywords = 4 credits per run
-  per_run_credit_cap: 4.5
+  max_keywords: 500           # every concept, for now (200 concepts = 40 credits/week)
+  per_run_credit_cap: 100
 
 # --- Google Trends (via Apify) ---
-# ~$0.025 per keyword + $0.025 per batch. 50 keywords weekly = ~$6/month.
+# ~$0.025 per keyword + $0.025 per batch. 200 keywords weekly = ~$5.20/week.
 google_trends:
-  max_keywords: 50
-  batch_size: 10
+  max_keywords: 500           # every concept, for now
+  batch_size: 25
   geo: US
   time_range: today 12-m      # 12 months of weekly data points
 
 # --- TikTok hashtags (via Apify) ---
-# Cost per hashtag = videos_per_hashtag x ~$0.002-0.003.
-# 50 hashtags x 10 videos weekly = ~$4-6/month.
+# Cost per hashtag = videos_per_hashtag x ~$0.002-0.003. The hashtag's total
+# views (the key number) comes with every video, so 3 videos is enough.
+# 200 hashtags x 3 videos weekly = ~$1.20-1.80/week.
 tiktok:
-  max_keywords: 50
-  batch_size: 10
-  videos_per_hashtag: 10
+  max_keywords: 500           # every concept, for now
+  batch_size: 25
+  videos_per_hashtag: 3
 
 # --- Reddit (official API, free) ---
 # Posts matching any buy-intent phrase in these subreddits.
