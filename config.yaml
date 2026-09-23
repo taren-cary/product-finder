@@ -15,17 +15,17 @@ collectors:
     enabled: true
     schedule: weekly
   amazon:
-    enabled: false      # off until the Apify plan is decided
+    enabled: true
     schedule: weekly
   reddit:
     enabled: false      # off until Reddit API credentials are in .env
     schedule: daily     # free, so daily
   # Enrichment: these look up keywords from the watchlist and from concepts.
   google_trends:
-    enabled: false      # off until the Apify plan is upgraded
+    enabled: true
     schedule: weekly
   tiktok:
-    enabled: false      # off until the Apify plan is upgraded
+    enabled: true
     schedule: weekly
   kalodata_keywords:
     enabled: true
