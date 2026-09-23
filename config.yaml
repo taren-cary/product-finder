@@ -46,6 +46,46 @@ concepts:
 # restricted items). Fill in from TikTok Shop's list; plain words are fine.
 excluded_product_types: []
 
+# --- Metrics (features step) ---
+features:
+  rising_threshold: 0.10       # a source counts as "rising" at +10% or more
+  velocity_cap: 2.0            # growth above +200% counts as +200% (stops one wild number dominating)
+  google_min_interest: 5       # ignore Google growth when interest is below this (0-100 scale; tiny numbers are noise)
+  spike_ratio: 2.0             # a recent week at 2x the typical level, without a steady climb, is a spike
+  amazon_new_entry_value: 0.5  # a product new to the Best Sellers list counts as a +50% rank gain
+  reddit_min_mentions: 2       # fewer buy-intent posts than this in 28 days = no Reddit signal
+  outside_weights:             # how much each outside-TikTok source counts toward outside demand
+    google: 1.0
+    amazon: 1.0
+    reddit: 0.5
+  saturation_reference:        # the level at which each signal counts as "fully crowded"
+    sellers: 100               # distinct sellers among the top 100 TikTok Shop products
+    creators: 100              # distinct creators among the top 100 shoppable videos
+    revenue_7d: 1000000        # weekly TikTok Shop revenue of those products, USD
+    hashtag_views: 10000000000 # TikTok hashtag total views (10 billion)
+  saturation_weights:          # how much each signal counts toward tiktok_saturation
+    sellers: 0.30
+    creators: 0.25
+    revenue: 0.20
+    top3_share: 0.10
+    hashtag_views: 0.15
+
+# --- Opportunity score (scoring step) ---
+# opportunity = demand x 1/(1 + saturation_strength x saturation) x sustained x margin x 100
+scoring:
+  source_weights:              # how much rising demand on each source counts
+    google: 1.0
+    amazon: 1.0
+    reddit: 0.5
+    tiktok: 0.5
+    tiktokshop: 0.5
+  velocity_cap: 2.0
+  breadth_bonus: 0.25          # +25% for every extra source that's rising (independent confirmation)
+  saturation_strength: 4       # saturation 1.0 cuts the score to 1/5; 0.5 cuts it to 1/3
+  unknown_saturation: 0.5      # assumed when there's no TikTok Shop data yet
+  unknown_sustained: 0.75      # assumed when there's no Google history
+  spike_penalty: 0.5           # multiply by this when the rise looks like a one-off spike
+
 # --- Keyword watchlist ---
 # Products you want tracked no matter what. Google Trends, TikTok and the
 # Kalodata keyword search look these up first, then the product concepts

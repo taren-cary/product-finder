@@ -26,7 +26,9 @@ from core.config import settings
 from core.db import connect
 from core.logging_setup import setup_logging
 from core.steps import run_step
+from features import run as features
 from normalize import run as normalize
+from scoring import run as scoring
 
 log = logging.getLogger("run_daily")
 
@@ -35,7 +37,7 @@ log = logging.getLogger("run_daily")
 #   2. steps                 - turn raw data into items, group items into concepts
 #   3. enrichment collectors - look up watchlist + concept keywords elsewhere
 #      (after step 2, so new concepts get looked up the same run)
-#   4. later steps           - features and scoring (Milestone 3)
+#   4. later steps           - weekly metrics per concept, then the opportunity score
 # Switch collectors on/off and set their schedule in config.yaml.
 DISCOVERY_COLLECTORS = [
     KalodataCollector,
@@ -55,8 +57,8 @@ ENRICHMENT_COLLECTORS = [
 ]
 
 LATER_STEPS = [
-    # ("features", features.run),
-    # ("scoring", scoring.run),
+    ("features", features.run),
+    ("scoring", scoring.run),
 ]
 
 ALL_COLLECTORS = DISCOVERY_COLLECTORS + ENRICHMENT_COLLECTORS

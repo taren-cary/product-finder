@@ -105,6 +105,17 @@ If grouping quality becomes a real problem later, Supabase includes `pgvector`, 
 - `margin_estimate`: typical sell price minus sourcing cost (Phase 2, from 1688)
 - `spike_risk`: flags one-off spikes versus sustained climbs
 
+**Implemented definitions (v1).** Full detail is in `features/run.py`; every threshold and weight is in `config.yaml`.
+- `velocity_google`: last 4 weeks vs the 4 before (12-month weekly Trends series; ignored when interest is below 5/100).
+- `velocity_amazon`: average Best Sellers rank gain vs last week; a new entry counts as +0.5.
+- `velocity_reddit`: buy-intent posts in the last 28 days vs the 28 before (needs at least 2).
+- `velocity_tiktok`: hashtag total views, week over week.
+- `velocity_tiktokshop`: revenue of the top 100 TikTok Shop products for the keyword, week over week (Kalodata's own 7-day growth until there are two weeks of data).
+- `tiktok_saturation` (0 to 1): log-scaled blend of sellers, creators, weekly revenue, top-3 seller share and hashtag views, measured against "fully crowded" reference levels.
+- `lead_lag_gap`: weighted outside demand growth (Google, Amazon, Reddit) minus TikTok Shop supply growth (sellers + creators, week over week).
+- `spike_risk` / `sustained_factor`: from the Trends series. Sustained = how many of the last 8 weeks sit above the prior baseline, mapped to 0.5 to 1.0.
+- Stored per concept per week in `concept_weekly`, with the inputs behind each number in `details`.
+
 ## Opportunity score (v1, tune later)
 ```
 opportunity = demand_breadth_weighted_velocity
@@ -113,6 +124,16 @@ opportunity = demand_breadth_weighted_velocity
             * margin_factor   # neutral (1.0) until Phase 2
 ```
 Keep all weights in `config.yaml` so the owner can adjust them without touching code.
+
+Implemented as follows:
+- demand = the sum of (source weight x rising velocity) x (1 + 0.25 per extra rising source). Velocity is capped at +200%, and falling sources count as 0.
+- saturation factor = 1 / (1 + 4 x saturation).
+- A spike halves the sustained factor.
+- Unknown saturation counts as 0.5; unknown sustainedness counts as 0.75.
+- The score is multiplied by 100 and ranked per week.
+- `tests/test_metrics.py` checks the math against known answers.
+
+Enrichment keywords are prioritized by score: shortlisted concepts first, then the best-scoring concepts alternating with concepts never looked up yet.
 
 ## Dashboard (Streamlit)
 - Ranked table of concepts showing score, a breakdown of each component, and sparklines
