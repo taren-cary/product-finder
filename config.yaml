@@ -31,6 +31,21 @@ collectors:
     enabled: true
     schedule: weekly
 
+# --- Concept grouping (Claude) ---
+# Groups items from every source into product concepts. Runs daily but only
+# looks at items it hasn't classified yet, so most days it's quick and cheap.
+concepts:
+  model: claude-opus-5        # or claude-sonnet-5 / claude-haiku-4-5 to cut cost
+  effort: low                 # classification doesn't need deep reasoning
+  batch_size: 40              # items per request to Claude
+  max_items_per_run: 1500
+  max_concepts_in_prompt: 300 # beyond this, only the closest-matching concepts are sent
+  max_cost_per_run_usd: 5.00  # stop for the day once this is reached
+
+# Product types to never treat as products (TikTok Shop prohibited or
+# restricted items). Fill in from TikTok Shop's list; plain words are fine.
+excluded_product_types: []
+
 # --- Keyword watchlist ---
 # Products you want tracked no matter what. Google Trends, TikTok and the
 # Kalodata keyword search look these up first, then the product concepts

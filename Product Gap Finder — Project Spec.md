@@ -21,7 +21,7 @@ Categories are fully open. Nothing is excluded up front except products TikTok S
   - Free projects pause after about a week of inactivity. The pipeline touches the database every day at noon, which keeps it awake; if the scheduled job stops for a week, the project must be resumed from the Supabase dashboard.
 - `.env` for all API keys and the database connection string, loaded with python-dotenv. Never hardcode keys and never commit `.env`.
 - Streamlit for the dashboard (reads from Supabase the same way the scripts do)
-- Claude API (Anthropic SDK) for product-concept clustering and summarization. Default to Claude Haiku 4.5 for batch classification; step up to a larger model only if grouping quality is poor.
+- Claude API (Anthropic SDK) for product-concept clustering. Uses Claude Opus 5 at low effort with structured JSON output (about $0.004 per item); the model is set in `config.yaml` and can be switched to Sonnet 5 or Haiku 4.5 to cut cost.
 - Windows Task Scheduler runs `run_daily.py` every day at 12:00 PM (it also runs as soon as the PC is back on if it was off at noon). If the PC being off becomes a problem, move the job to a small cloud VM or GitHub Actions.
 - Git for version control.
 
@@ -37,7 +37,8 @@ concepts/        LLM clustering: map raw items -> canonical "product concept"
 features/        compute metrics per concept per week
 scoring/         opportunity score + ranking
 dashboard/       Streamlit app
-run_daily.py     runs everything in order
+run_daily.py     runs everything in order: discovery collectors -> normalize ->
+                 concepts -> enrichment collectors -> features/scoring
 ```
 
 **Time series is the asset.** Velocity metrics need history, so collectors must go live first and run on schedule from day one, even before scoring exists. What matters is how long and how consistent the history is, not how often it is sampled.
@@ -52,7 +53,8 @@ run_daily.py     runs everything in order
 The same product appears under different names on each platform ("heatless curling rod," "overnight curl ribbon," "satin curler"). Solution:
 1. Extract a short normalized product description from each raw item.
 2. Send new (unmapped) items to Claude in batches, along with a list of existing concepts (name, short description, a few example titles). Claude assigns each item to an existing concept or proposes a new canonical `product_concept` (for example, "heatless hair curler"). No embeddings.
-3. Store the mapping table `item_id -> concept_id` so each item is only classified once.
+3. Store the mapping table `item_id -> concept_id` so each item is only classified once. Items that aren't sellable physical products (most Reddit posts, licensed collectibles, vehicles, media, anything in `excluded_product_types`) are marked `is_product = false` and skipped from then on.
+   Concepts are generic, brand-free product types (e.g. "Roomba Plus 4020" -> "robot vacuum and mop"), with a category, a one-line description and 1-3 search keywords that the enrichment collectors look up.
 4. Allow manual merge and split of concepts from the dashboard.
 
 **Scaling the concept list.** Once there are too many concepts to send with every batch (a few thousand), narrow the candidates before calling Claude, still without embeddings:

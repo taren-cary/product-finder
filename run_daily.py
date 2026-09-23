@@ -21,34 +21,45 @@ from collectors.kalodata import KalodataCollector
 from collectors.kalodata_keywords import KalodataKeywordsCollector
 from collectors.reddit import RedditCollector
 from collectors.tiktok import TikTokCollector
+from concepts import run as concepts
 from core.config import settings
 from core.db import connect
 from core.logging_setup import setup_logging
+from core.steps import run_step
+from normalize import run as normalize
 
 log = logging.getLogger("run_daily")
 
-# Every collector, in the order they run. Add new ones here as they're built;
-# switch them on/off and set their schedule in config.yaml under "collectors".
-ALL_COLLECTORS = [
-    # Discovery: find candidate products.
+# The pipeline, in order:
+#   1. discovery collectors  - find candidate products
+#   2. steps                 - turn raw data into items, group items into concepts
+#   3. enrichment collectors - look up watchlist + concept keywords elsewhere
+#      (after step 2, so new concepts get looked up the same run)
+#   4. later steps           - features and scoring (Milestone 3)
+# Switch collectors on/off and set their schedule in config.yaml.
+DISCOVERY_COLLECTORS = [
     KalodataCollector,
     AmazonBestsellersCollector,
     RedditCollector,
-    # Enrichment: look up watchlist and concept keywords on other sources.
-    # (Once the concept step exists, these will run after it so that new
-    # concepts get looked up the same week.)
+]
+
+STEPS = [
+    ("normalize", normalize.run),
+    ("concepts", concepts.run),
+]
+
+ENRICHMENT_COLLECTORS = [
     GoogleTrendsCollector,
     TikTokCollector,
     KalodataKeywordsCollector,
 ]
 
-# Later steps (added in Milestones 2-3), each a function taking the snapshot date.
 LATER_STEPS = [
-    # ("normalize", normalize.run),
-    # ("concepts", concepts.run),
     # ("features", features.run),
     # ("scoring", scoring.run),
 ]
+
+ALL_COLLECTORS = DISCOVERY_COLLECTORS + ENRICHMENT_COLLECTORS
 
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -132,20 +143,22 @@ def main() -> int:
     results = {}
     collectors = collectors_to_run(args.only, today)
     if args.only and not collectors:
-        log.error("No collector named %r. Known: %s",
-                  args.only, [c.name for c in ALL_COLLECTORS] or "none yet")
-    for collector_class in collectors:
+        log.error("No collector named %r. Known: %s", args.only, [c.name for c in ALL_COLLECTORS])
+
+    for collector_class in [c for c in collectors if c in DISCOVERY_COLLECTORS]:
+        results[collector_class.name] = run_collector(collector_class, run_id, today)
+
+    # Steps are cheap and only process what's new, so they run every day.
+    if not args.only:
+        for step_name, step_fn in STEPS:
+            results[step_name] = run_step(step_name, step_fn, run_id, today)
+
+    for collector_class in [c for c in collectors if c in ENRICHMENT_COLLECTORS]:
         results[collector_class.name] = run_collector(collector_class, run_id, today)
 
     if not args.only:
         for step_name, step_fn in LATER_STEPS:
-            log.info("--- %s: starting ---", step_name)
-            try:
-                step_fn(today)
-                results[step_name] = "success"
-            except Exception:
-                log.exception("%s: failed; continuing", step_name)
-                results[step_name] = "failed"
+            results[step_name] = run_step(step_name, step_fn, run_id, today)
 
     # Overall status: success if everything worked, failed if nothing did.
     statuses = set(results.values())

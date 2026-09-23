@@ -1,7 +1,8 @@
 # Install with:  .venv\Scripts\python -m pip install -r requirements.txt
-# More packages (anthropic, streamlit) are added as each milestone needs them.
+# More packages (streamlit) are added as each milestone needs them.
 python-dotenv==1.2.3
 psycopg[binary]==3.3.6
 PyYAML==6.0.3
 requests==2.34.2
 praw==8.0.3
+anthropic==1.8.0
