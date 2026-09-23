@@ -1,0 +1,194 @@
+# Product Gap Finder settings.
+# Everything you might want to tweak lives here, so you never need to edit code.
+# API keys do NOT go here; they go in .env.
+
+# Which collectors run, and how often.
+#   enabled:  true / false
+#   schedule: weekly (on weekly_run_day) or daily
+# The pipeline itself runs every day at noon (Windows Task Scheduler); each
+# collector only does work on the days it's due. A missed weekly run is made
+# up on the next day the pipeline runs.
+weekly_run_day: monday
+
+collectors:
+  kalodata:
+    enabled: true
+    schedule: weekly
+  amazon:
+    enabled: false      # off until the Apify plan is decided
+    schedule: weekly
+  reddit:
+    enabled: false      # off until Reddit API credentials are in .env
+    schedule: daily     # free, so daily
+  # Enrichment: these look up keywords from the watchlist and from concepts.
+  google_trends:
+    enabled: false      # off until the Apify plan is upgraded
+    schedule: weekly
+  tiktok:
+    enabled: false      # off until the Apify plan is upgraded
+    schedule: weekly
+  kalodata_keywords:
+    enabled: true
+    schedule: weekly
+
+# --- Keyword watchlist ---
+# Products you want tracked no matter what. Google Trends, TikTok and the
+# Kalodata keyword search look these up first, then the product concepts
+# the system finds on its own (shortlisted first).
+watchlist: []
+
+# --- Amazon Best Sellers (via Apify) ---
+# One actor run per category; each returns the top 50 products.
+# Cost per category per run: ~$0.10 on Apify's free plan, ~$0.02 on Starter.
+# All 24 categories weekly: ~$10/month on free, ~$2/month on Starter.
+amazon:
+  top_100: false                     # true = ranks 51-100 too (doubles the cost)
+  max_charge_per_category_usd: 0.12  # hard limit Apify enforces per run
+  # Physical-product categories only (books, apps, music, gift cards etc. left out).
+  # Names are Amazon's URL slugs: amazon.com/gp/bestsellers/<slug>
+  categories:
+    - appliances            # Appliances
+    - arts-crafts           # Arts, Crafts & Sewing
+    - automotive            # Automotive
+    - baby-products         # Baby
+    - beauty                # Beauty & Personal Care
+    - photo                 # Camera & Photo
+    - wireless              # Cell Phones & Accessories
+    - fashion               # Clothing, Shoes & Jewelry
+    - pc                    # Computers & Accessories
+    - electronics           # Electronics
+    - grocery               # Grocery & Gourmet Food
+    - handmade              # Handmade
+    - hpc                   # Health & Household
+    - home-garden           # Home & Kitchen
+    - industrial            # Industrial & Scientific
+    - kitchen               # Kitchen & Dining
+    - musical-instruments   # Musical Instruments
+    - office-products       # Office Products
+    - lawn-garden           # Patio, Lawn & Garden
+    - pet-supplies          # Pet Supplies
+    - sporting-goods        # Sports & Outdoors
+    - hi                    # Tools & Home Improvement
+    - toys-and-games        # Toys & Games
+    - boost                 # Unique Finds
+
+# --- Kalodata (TikTok Shop data) ---
+# Each page of 100 rows costs 0.1 credits. Queries cover the last 7 days,
+# so a weekly run captures every week with no gaps or overlap.
+# Current plan: 10 pages per weekly run = 1.0 credits/week (~4.3/month).
+kalodata:
+  region: US
+  per_run_credit_cap: 1.2     # stop if a run's planned queries would cost more
+  min_balance_reserve: 2.0    # never spend the balance below this
+  usd_per_credit: 0           # set this once we know what a credit costs, for cost tracking
+  queries:
+    # Products whose revenue grew fastest vs the previous 7 days.
+    # The revenue floor filters out tiny products with huge % jumps.
+    - key: fastest_growing_7d
+      endpoint: tiktok/product/rank
+      pages: 3
+      body:
+        date_range: last7Day
+        sort_field: {field: revenue_growth_rate, type: DESC}
+        revenue_range: ">5000"
+        need_extra: true
+    # Top sellers by revenue over the last 7 days.
+    - key: top_revenue_7d
+      endpoint: tiktok/product/rank
+      pages: 3
+      body:
+        date_range: last7Day
+        sort_field: {field: revenue, type: DESC}
+        need_extra: true
+    # Products launched in the last 7 days, best sellers first.
+    - key: new_launches_7d
+      endpoint: tiktok/product/rank
+      pages: 3
+      body:
+        date_range: last7Day
+        launch_date: "<7"
+        sort_field: {field: revenue, type: DESC}
+        need_extra: true
+    # Mid-level categories: growth, and how concentrated sales are in the top 3 shops.
+    - key: categories_l2_7d
+      endpoint: tiktok/category/rank
+      pages: 1
+      body:
+        date_range: last7Day
+        category_level: 2
+        revenue_range: ">50000"   # skip tiny categories with meaningless % jumps
+        sort_field: {field: revenue_growth_rate, type: DESC}
+
+# Retry settings for every API call.
+retries:
+  attempts: 4          # total tries before giving up on a request
+  base_delay_seconds: 2  # wait 2s, then 4s, then 8s... between tries
+
+# Spending cap per collector per day, in US dollars. A collector stops
+# fetching once the next request would go over its cap (it keeps what it got).
+cost_caps:
+  apify_per_day_usd: 3.00
+
+# Logging
+logging:
+  level: INFO          # INFO for normal use, DEBUG for troubleshooting
+
+# --- Kalodata keyword search (TikTok Shop saturation per keyword) ---
+# 0.2 credits per keyword (one product search + one video search).
+kalodata_keywords:
+  max_keywords: 20            # 20 keywords = 4 credits per run
+  per_run_credit_cap: 4.5
+
+# --- Google Trends (via Apify) ---
+# ~$0.025 per keyword + $0.025 per batch. 50 keywords weekly = ~$6/month.
+google_trends:
+  max_keywords: 50
+  batch_size: 10
+  geo: US
+  time_range: today 12-m      # 12 months of weekly data points
+
+# --- TikTok hashtags (via Apify) ---
+# Cost per hashtag = videos_per_hashtag x ~$0.002-0.003.
+# 50 hashtags x 10 videos weekly = ~$4-6/month.
+tiktok:
+  max_keywords: 50
+  batch_size: 10
+  videos_per_hashtag: 10
+
+# --- Reddit (official API, free) ---
+# Posts matching any buy-intent phrase in these subreddits.
+reddit:
+  time_filter: day            # "day" for daily runs, "week" if run weekly
+  max_posts_per_subreddit: 100
+  subreddits:
+    - TikTokMadeMeBuyIt
+    - BuyItForLife
+    - shutupandtakemymoney
+    - AmazonTopRated
+    - gadgets
+    - SkincareAddiction
+    - MakeupAddiction
+    - HaircareScience
+    - CleaningTips
+    - organization
+    - HomeImprovement
+    - Parenting
+    - BabyBumps
+    - dogs
+    - cats
+    - fitness
+    - Cooking
+    - camping
+    - femalefashionadvice
+    - malefashionadvice
+  buy_intent_phrases:
+    - game changer
+    - holy grail
+    - worth every penny
+    - best purchase
+    - where can I buy
+    - where did you get
+    - just bought
+    - obsessed with
+    - life changing
+    - can't live without
