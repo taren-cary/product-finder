@@ -4,6 +4,9 @@
 # the database password from .env). Don't change this to 0.0.0.0.
 address = "localhost"
 port = 8501
+# Skips Streamlit's first-run "enter your email" question, which otherwise
+# stops the dashboard from starting. Open Dashboard.bat opens the browser.
+headless = true
 
 [browser]
 gatherUsageStats = false
