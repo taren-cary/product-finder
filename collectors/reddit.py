@@ -37,8 +37,10 @@ class RedditCollector(BaseCollector):
         self.reddit.read_only = True
 
     def collect(self) -> int:
-        # One search per subreddit: all phrases joined with OR.
-        query = " OR ".join(f'"{p}"' for p in self.cfg["buy_intent_phrases"])
+        # One search per subreddit: all phrases joined with OR. Each phrase is
+        # grouped in (), meaning "all these words". Exact-phrase "quotes"
+        # return nothing from Reddit's search (tested 2026-09-23).
+        query = " OR ".join(f"({p})" for p in self.cfg["buy_intent_phrases"])
         total = 0
         for sub in self.cfg["subreddits"]:
             try:
@@ -52,11 +54,21 @@ class RedditCollector(BaseCollector):
 
     def _search(self, sub: str, query: str) -> dict:
         time.sleep(1)  # be polite to the API
+        phrases = [p.lower() for p in self.cfg["buy_intent_phrases"]]
         posts = []
+        searched = 0
         for post in self.reddit.subreddit(sub).search(
             query, sort="new", time_filter=self.cfg["time_filter"], limit=self.cfg["max_posts_per_subreddit"]
         ):
+            searched += 1
+            # Reddit's search matches the words anywhere, so double-check that
+            # the post really contains one of the exact phrases.
+            text = f"{post.title} {post.selftext or ''}".lower()
+            matched = [p for p in phrases if p in text]
+            if not matched:
+                continue
             row = {f: getattr(post, f, None) for f in POST_FIELDS}
             row["selftext"] = (row["selftext"] or "")[:MAX_TEXT_CHARS]
+            row["matched_phrases"] = matched
             posts.append(row)
-        return {"subreddit": sub, "query": query, "posts": posts}
+        return {"subreddit": sub, "query": query, "posts_searched": searched, "posts": posts}

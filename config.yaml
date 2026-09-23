@@ -18,7 +18,7 @@ collectors:
     enabled: true
     schedule: weekly
   reddit:
-    enabled: false      # off until Reddit API credentials are in .env
+    enabled: true
     schedule: daily     # free, so daily
   # Enrichment: these look up keywords from the watchlist and from concepts.
   google_trends:
@@ -161,17 +161,19 @@ reddit:
   time_filter: day            # "day" for daily runs, "week" if run weekly
   max_posts_per_subreddit: 100
   subreddits:
-    - TikTokMadeMeBuyIt
     - BuyItForLife
     - shutupandtakemymoney
-    - AmazonTopRated
+    - INEEEEDIT
+    - ofcoursethatsathing
     - gadgets
     - SkincareAddiction
     - MakeupAddiction
+    - BeautyGuruChatter
     - HaircareScience
     - CleaningTips
     - organization
     - HomeImprovement
+    - HomeDecorating
     - Parenting
     - BabyBumps
     - dogs
