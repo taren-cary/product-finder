@@ -1,0 +1,397 @@
+"""Product Gap Finder dashboard.
+
+Start it with "Open Dashboard.bat" in the project folder, or:
+    .venv\\Scripts\\streamlit run dashboard\\app.py
+
+Pages:
+  Opportunities     ranked concepts, filters, bulk status changes
+  Concept details   every source's history side by side, the items behind the
+                    concept, and manual fixes (merge, split, edit keywords)
+  Pipeline health   recent runs, failures, spend, credits left
+"""
+
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+# Make the project's modules (core, collectors...) importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pandas as pd  # noqa: E402
+import requests  # noqa: E402
+import streamlit as st  # noqa: E402
+
+from collectors.keywords import to_hashtag  # noqa: E402
+from core.config import require_env  # noqa: E402
+from dashboard import charts, data  # noqa: E402
+
+st.set_page_config(page_title="Product Gap Finder", layout="wide")
+
+STATUSES = ["new", "reviewed", "shortlisted", "rejected"]
+SOURCE_LABELS = {"google": "Google", "amazon": "Amazon", "reddit": "Reddit",
+                 "tiktok": "TikTok", "tiktokshop": "TikTok Shop"}
+
+
+def open_concept(concept_id: int) -> None:
+    st.session_state["concept_id"] = int(concept_id)
+    st.switch_page(concept_page)
+
+
+def pct(value) -> str:
+    return "–" if value is None or pd.isna(value) else f"{value * 100:+.0f}%"
+
+
+# =============================================================================
+# Page 1: Opportunities
+# =============================================================================
+
+def opportunities() -> None:
+    st.title("Opportunities")
+    all_weeks = data.weeks()
+    if not all_weeks:
+        st.info("No scores yet. They appear after the pipeline's features and scoring steps run.")
+        return
+
+    # --- Filters, in one row above the table ---
+    f = st.columns([1.1, 1, 1.2, 1.2, 1.8, 1.6])
+    week = f[0].selectbox("Week of", all_weeks, format_func=lambda d: d.strftime("%b %d, %Y"))
+    min_breadth = f[1].selectbox("Min. rising sources", [0, 1, 2, 3, 4, 5], index=0,
+                                 help="How many sources show demand up 10%+ this week.")
+    max_sat = f[2].slider("Max. TikTok saturation", 0.0, 1.0, 1.0, 0.05,
+                          help="0 = nobody selling it on TikTok Shop, 1 = crowded.")
+    age = f[3].selectbox("First spotted", ["Any time", "Last 7 days", "Last 30 days", "Last 90 days"])
+    statuses = f[4].multiselect("Status", STATUSES, default=["new", "reviewed", "shortlisted"])
+    search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
+
+    df = data.ranking(week)
+    only_data = st.toggle("Only concepts with data this week", value=True,
+                          help="Concepts not looked up yet have no score. Every concept is looked up each Monday.")
+
+    view = df[df["review_status"].isin(statuses)]
+    if only_data:
+        view = view[view["has_data"].fillna(False)]
+    if min_breadth:
+        view = view[view["demand_breadth"].fillna(0) >= min_breadth]
+    if max_sat < 1.0:
+        view = view[view["tiktok_saturation"].notna() & (view["tiktok_saturation"] <= max_sat)]
+    if age != "Any time":
+        days = int(age.split()[1])
+        view = view[pd.to_datetime(view["first_spotted"]) >= pd.Timestamp(date.today() - timedelta(days=days))]
+    if search:
+        s = search.lower()
+        view = view[view["name"].str.contains(s, case=False) | view["category"].fillna("").str.contains(s, case=False)]
+
+    # --- Headline tiles ---
+    t = st.columns(4)
+    t[0].metric("Concepts tracked", len(df))
+    t[1].metric("With data this week", int(df["has_data"].fillna(False).sum()))
+    t[2].metric("Shortlisted", int((df["review_status"] == "shortlisted").sum()))
+    top = df.dropna(subset=["opportunity_score"]).head(1)
+    t[3].metric("Top score", f"{top['opportunity_score'].iloc[0]:.1f}" if len(top) else "–",
+                help=top["name"].iloc[0] if len(top) else None)
+
+    # --- Sparklines: Google interest (last 26 weeks) and score by week ---
+    google = data.google_series()
+    history = data.score_history()
+    view = view.copy()
+    view["google_trend"] = [
+        [v for _, v in google.get(data.keyword_for(r), [])][-26:] or None for _, r in view.iterrows()
+    ]
+    view["score_trend"] = [
+        list(history.loc[history["concept_id"] == cid, "opportunity_score"].fillna(0)) or None
+        for cid in view["id"]
+    ]
+
+    st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
+               "Scores firm up after 2–4 weeks of history.")
+    columns = ["rank", "name", "opportunity_score", "google_trend", "score_trend", "demand_breadth",
+               "outside_velocity", "velocity_tiktokshop", "tiktok_saturation", "sellers", "creators",
+               "lead_lag_gap", "paid_share", "spike_risk", "category", "review_status",
+               "first_spotted", "items"]
+    event = st.dataframe(
+        view[columns],
+        hide_index=True,
+        width="stretch",
+        height=560,
+        on_select="rerun",
+        selection_mode="multi-row",
+        key="ranking_table",
+        column_config={
+            "rank": st.column_config.NumberColumn("Rank", width="small"),
+            "name": st.column_config.TextColumn("Concept", width="medium"),
+            "opportunity_score": st.column_config.NumberColumn("Score", format="%.1f",
+                help="Rising demand x (1 / saturation) x steadiness. Higher is better."),
+            "google_trend": st.column_config.LineChartColumn("Google, 6 mo", y_min=0, y_max=100),
+            "score_trend": st.column_config.LineChartColumn("Score by week"),
+            "demand_breadth": st.column_config.NumberColumn("Rising sources", width="small"),
+            "outside_velocity": st.column_config.NumberColumn("Demand outside TikTok", format="percent",
+                help="Weighted growth on Google, Amazon and Reddit."),
+            "velocity_tiktokshop": st.column_config.NumberColumn("TikTok Shop growth", format="percent"),
+            "tiktok_saturation": st.column_config.ProgressColumn("TikTok saturation", min_value=0,
+                max_value=1, format="%.2f", help="0 = empty, 1 = crowded."),
+            "sellers": st.column_config.NumberColumn("Sellers", width="small"),
+            "creators": st.column_config.NumberColumn("Creators", width="small"),
+            "lead_lag_gap": st.column_config.NumberColumn("Lead-lag gap", format="percent",
+                help="Outside demand growth minus TikTok Shop supply growth. Positive = the gap you want."),
+            "paid_share": st.column_config.NumberColumn("Views from ads", format="percent"),
+            "spike_risk": st.column_config.CheckboxColumn("Spike?", width="small",
+                help="Recent rise looks like a one-off spike rather than a steady climb."),
+            "category": st.column_config.TextColumn("Category"),
+            "review_status": st.column_config.TextColumn("Status", width="small"),
+            "first_spotted": st.column_config.DateColumn("First spotted", format="MMM D"),
+            "items": st.column_config.NumberColumn("Items", width="small"),
+        },
+    )
+
+    selected = view.iloc[event.selection.rows] if event and event.selection.rows else view.iloc[0:0]
+    a = st.columns([1.2, 1, 1, 1, 1, 3])
+    if a[0].button("Open details", disabled=len(selected) != 1, type="primary"):
+        open_concept(selected["id"].iloc[0])
+    for col, (label, status) in zip(a[1:5], [("Shortlist", "shortlisted"), ("Mark reviewed", "reviewed"),
+                                               ("Reject", "rejected"), ("Reset to new", "new")]):
+        if col.button(label, disabled=len(selected) == 0):
+            data.set_status(list(selected["id"].astype(int)), status)
+            st.toast(f"{len(selected)} concept(s) set to {status}")
+            st.rerun()
+    if len(selected):
+        a[5].caption(f"{len(selected)} selected")
+
+
+# =============================================================================
+# Page 2: Concept details
+# =============================================================================
+
+def concept_details() -> None:
+    options = data.concept_options()
+    if not len(options):
+        st.info("No concepts yet.")
+        return
+    ids = list(options["id"].astype(int))
+    labels = dict(zip(ids, options["name"]))
+    current = st.session_state.get("concept_id", ids[0])
+    if current not in labels:
+        current = ids[0]
+    concept_id = st.selectbox("Concept", ids, index=ids.index(current), format_func=lambda i: labels[i])
+    st.session_state["concept_id"] = concept_id
+
+    c = data.concept(concept_id)
+    weeks_df = data.concept_weeks(concept_id)
+    latest = weeks_df.iloc[-1].to_dict() if len(weeks_df) else {}
+    keyword = data.keyword_for(c)
+
+    st.title(c["name"])
+    st.caption(f"{c['category'] or 'No category'} · searched as “{keyword}” · "
+               f"first spotted {pd.to_datetime(c['created_at']).strftime('%b %d, %Y')} · status: **{c['review_status']}**")
+    if c.get("description"):
+        st.write(c["description"])
+
+    # Status buttons
+    b = st.columns(5)
+    for col, (label, status) in zip(b[:4], [("Shortlist", "shortlisted"), ("Mark reviewed", "reviewed"),
+                                             ("Reject", "rejected"), ("Reset to new", "new")]):
+        if col.button(label, disabled=c["review_status"] == status, key=f"status_{status}"):
+            data.set_status([concept_id], status)
+            st.rerun()
+
+    # Headline numbers
+    prev_score = weeks_df["opportunity_score"].iloc[-2] if len(weeks_df) >= 2 else None
+    prev_score = None if prev_score is None or pd.isna(prev_score) else prev_score
+    m = st.columns(6)
+    score = latest.get("opportunity_score")
+    score = None if score is None or pd.isna(score) else score
+    m[0].metric("Score" + (f" (rank {int(latest['rank'])})" if latest.get("rank") else ""),
+                f"{score:.1f}" if score is not None and not pd.isna(score) else "–",
+                delta=None if prev_score is None or score is None else f"{score - prev_score:+.1f} vs last week")
+    m[1].metric("Rising sources", int(latest["demand_breadth"]) if latest.get("demand_breadth") is not None else "–")
+    m[2].metric("Demand outside TikTok", pct(latest.get("outside_velocity")))
+    sat = latest.get("tiktok_saturation")
+    m[3].metric("TikTok saturation", f"{sat:.2f}" if sat is not None and not pd.isna(sat) else "–",
+                help="0 = empty, 1 = crowded")
+    m[4].metric("Lead-lag gap", pct(latest.get("lead_lag_gap")))
+    m[5].metric("Views from ads", "–" if latest.get("paid_share") is None or pd.isna(latest.get("paid_share"))
+                else f"{latest['paid_share'] * 100:.0f}%")
+    if latest.get("spike_risk"):
+        st.warning("⚠ Spike risk: the recent Google rise looks like a one-off spike, not a steady climb.")
+
+    with st.expander("Why this score"):
+        details = latest.get("details") or {}
+        breakdown = details.get("score_breakdown") or {}
+        rows = [{"Source": SOURCE_LABELS[s], "Growth this week": pct(latest.get(f"velocity_{s}")),
+                 "Counts toward score": "yes" if s in (breakdown.get("rising_sources") or {}) else "no"}
+                for s in SOURCE_LABELS]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        shop = details.get("shop") or {}
+        st.markdown(
+            f"- Demand (weighted, with the multi-source bonus): **{breakdown.get('demand', '–')}**\n"
+            f"- Saturation used: **{breakdown.get('saturation_used', '–')}**, so the score is multiplied by "
+            f"**{breakdown.get('saturation_factor', '–')}**\n"
+            f"- Steadiness used: **{breakdown.get('sustained_used', '–')}** (0.5 = brief rise, 1.0 = steady climb)\n"
+            f"- TikTok Shop, last 7 days: {shop.get('sellers', '–')} sellers, "
+            f"${shop.get('revenue', 0):,.0f} revenue, top 3 sellers take "
+            f"{(shop.get('top3_share') or 0) * 100:.0f}%"
+        )
+
+    # Every source's history, side by side (one measure per chart)
+    st.subheader("History by source")
+    google = pd.DataFrame(data.google_series().get(keyword, []), columns=["week_start", "interest"])
+    shop_series = data.weekly_source_series(keyword, to_hashtag(keyword))
+    grid = st.columns(2)
+    with grid[0]:
+        charts.line(google, "week_start", "interest", "Google search interest (12 months)", "Interest (0–100)")
+    with grid[1]:
+        charts.line(weeks_df, "week_start", "opportunity_score", "Opportunity score by week", "Score", ",.1f")
+    with grid[0]:
+        charts.line(shop_series, "week_start", "shop_revenue", "TikTok Shop revenue, top 100 products (7 days)",
+                    "Revenue (USD)", "$,.0f")
+    with grid[1]:
+        charts.line(shop_series, "week_start", "sellers", "TikTok Shop sellers", "Sellers")
+    with grid[0]:
+        charts.line(shop_series, "week_start", "hashtag_views", f"TikTok #{to_hashtag(keyword)} total views",
+                    "Views", "~s")
+    with grid[1]:
+        charts.line(data.amazon_ranks(concept_id), "week_start", "best_rank",
+                    "Best Amazon Best Sellers rank (lower is better)", "Rank", reverse_y=True, zero=False)
+    with grid[0]:
+        charts.line(data.reddit_mentions(concept_id), "week_start", "mentions",
+                    "Reddit buy-intent posts per week", "Posts")
+
+    # The items behind the concept
+    st.subheader("Items in this concept")
+    items = data.concept_items(concept_id)
+    if not len(items):
+        st.caption("No items.")
+    else:
+        event = st.dataframe(
+            items[["source", "title", "normalized_description", "price", "rank", "category",
+                   "first_seen", "last_seen", "assigned_by", "url"]],
+            hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
+            key=f"items_{concept_id}",
+            column_config={
+                "source": "Source", "title": st.column_config.TextColumn("Title", width="large"),
+                "normalized_description": "Description",
+                "price": st.column_config.NumberColumn("Price", format="dollar"),
+                "rank": "Rank", "category": "Listed under",
+                "first_seen": st.column_config.DateColumn("First seen", format="MMM D"),
+                "last_seen": st.column_config.DateColumn("Last seen", format="MMM D"),
+                "assigned_by": "Grouped by",
+                "url": st.column_config.LinkColumn("Link", display_text="open"),
+            },
+        )
+        picked = items.iloc[event.selection.rows] if event and event.selection.rows else items.iloc[0:0]
+        if len(picked):
+            st.markdown(f"**{len(picked)} item(s) selected** — move them (split) or mark as not a product:")
+            s = st.columns([2, 2, 1, 1.2])
+            others = [i for i in ids if i != concept_id]
+            target = s[0].selectbox("Move to existing concept", [None] + others,
+                                    format_func=lambda i: "—" if i is None else labels[i])
+            new_name = s[1].text_input("…or to a new concept named")
+            if s[2].button("Move", type="primary", disabled=target is None and not new_name.strip()):
+                try:
+                    moved_to = data.move_items(list(picked["id"].astype(int)), target, new_name, c["category"])
+                    st.toast(f"Moved {len(picked)} item(s)")
+                    if target is None:
+                        st.session_state["concept_id"] = moved_to
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+            if s[3].button("Not a product"):
+                data.mark_not_product(list(picked["id"].astype(int)))
+                st.rerun()
+
+    # Manual fixes
+    with st.expander("Edit name, category or search keywords"):
+        with st.form(f"edit_{concept_id}"):
+            name = st.text_input("Name", c["name"])
+            category = st.text_input("Category", c["category"] or "")
+            kw_text = st.text_input("Search keywords (comma-separated, most important first)",
+                                    ", ".join(c["keywords"] or []),
+                                    help="The first keyword is what Google Trends, TikTok and Kalodata look up.")
+            if st.form_submit_button("Save"):
+                keywords = [k.strip().lower() for k in kw_text.split(",") if k.strip()]
+                try:
+                    data.update_concept(concept_id, name, category, keywords or [name])
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Couldn't save: {e}")
+
+    with st.expander("Merge into another concept"):
+        st.caption("Use this when two concepts are really the same product. This concept's items and keywords "
+                   "move into the one you pick, and this concept disappears from the lists.")
+        others = [i for i in ids if i != concept_id]
+        target = st.selectbox("Merge into", others, format_func=lambda i: labels[i], key=f"merge_{concept_id}")
+        sure = st.checkbox(f"Yes, merge “{c['name']}” into “{labels.get(target, '')}”")
+        if st.button("Merge", disabled=not sure, type="primary"):
+            data.merge(concept_id, target)
+            st.session_state["concept_id"] = target
+            st.rerun()
+
+
+# =============================================================================
+# Page 3: Pipeline health
+# =============================================================================
+
+def kalodata_balance() -> str:
+    r = requests.get("https://www.kalodata.com/openapi/v1/credit/balance",
+                     headers={"X-API-Key": require_env("KALODATA_API_KEY")}, timeout=20)
+    return f"{r.json()['data']['totalRemain']:.1f} credits"
+
+
+def apify_usage() -> str:
+    r = requests.get("https://api.apify.com/v2/users/me/limits",
+                     headers={"Authorization": "Bearer " + require_env("APIFY_API_TOKEN")}, timeout=20)
+    d = r.json()["data"]
+    return f"${d['current']['monthlyUsageUsd']:.2f} of ${d['limits']['maxMonthlyUsageUsd']:.0f}"
+
+
+def pipeline_health() -> None:
+    st.title("Pipeline health")
+    stats = data.database_stats()
+    t = st.columns(4)
+    t[0].metric("Database size", f"{stats['db_bytes'] / 1e6:.0f} MB",
+                help="Supabase's free plan allows about 500 MB.")
+    t[1].metric("Items collected", f"{int(stats['items']):,}")
+    t[2].metric("Waiting to be grouped", f"{int(stats['unclassified']):,}")
+    t[3].metric("Concepts", f"{int(stats['concepts']):,}")
+
+    st.subheader("Credits and usage")
+    if st.button("Check live balances"):
+        b = st.columns(2)
+        for col, label, fn in [(b[0], "Kalodata", kalodata_balance), (b[1], "Apify this month", apify_usage)]:
+            try:
+                col.metric(label, fn())
+            except Exception as e:
+                col.error(f"{label}: couldn't check ({e})")
+
+    month_start = date.today().replace(day=1)
+    spend = data.spend_by_source(month_start)
+    st.markdown(f"**Estimated spend since {month_start.strftime('%b %d')}:** "
+                f"${spend['usd'].sum() if len(spend) else 0:,.2f} (Apify and Claude; Kalodata is in credits)")
+    if len(spend):
+        st.dataframe(spend, hide_index=True, width="stretch", column_config={
+            "source": "Step", "usd": st.column_config.NumberColumn("USD", format="dollar"),
+            "runs": "Runs", "failed": "Failed"})
+
+    st.subheader("Recent runs")
+    runs = data.recent_runs(14)
+    only_problems = st.toggle("Only failures and partial runs")
+    if only_problems:
+        runs = runs[runs["status"].isin(["failed", "partial", "running"])]
+    if not len(runs):
+        st.success("Nothing to show.")
+        return
+    runs = runs.assign(status=runs["status"].map(
+        {"success": "✅ success", "partial": "⚠️ partial", "failed": "❌ failed", "running": "⏳ running"}))
+    st.dataframe(runs, hide_index=True, width="stretch", column_config={
+        "started_at": st.column_config.DatetimeColumn("Started", format="MMM D, h:mm a"),
+        "source": "Step", "snapshot_date": None, "status": "Status",
+        "records_saved": "Records", "estimated_cost_usd": st.column_config.NumberColumn("Cost", format="dollar"),
+        "seconds": "Seconds", "error_message": st.column_config.TextColumn("Error", width="large"),
+    })
+
+
+# =============================================================================
+
+opportunities_page = st.Page(opportunities, title="Opportunities", icon="📈", default=True)
+concept_page = st.Page(concept_details, title="Concept details", icon="🔎", url_path="concept")
+health_page = st.Page(pipeline_health, title="Pipeline health", icon="🩺", url_path="health")
+st.navigation([opportunities_page, concept_page, health_page]).run()

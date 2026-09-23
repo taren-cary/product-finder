@@ -76,13 +76,28 @@ def run(conn, snapshot_date: date) -> dict:
         (week,),
     ).fetchall()
 
-    scored = []
+    scored, unmeasured = [], []
     for r in rows:
+        # A concept nobody has looked up yet has no score (not a score of 0).
+        has_data = (any(r.get(f"velocity_{s}") is not None for s in ALL_SOURCES)
+                    or r.get("tiktok_saturation") is not None
+                    or ((r.get("details") or {}).get("google") or {}).get("points", 0) > 0)
+        if not has_data:
+            unmeasured.append(r["concept_id"])
+            continue
         score, breakdown = opportunity(r, cfg)
         scored.append((score, r["concept_id"], breakdown))
     scored.sort(key=lambda x: x[0], reverse=True)
 
     with conn.cursor() as cur:
+        cur.execute(
+            """
+            update gapfinder.concept_weekly
+            set opportunity_score = null, rank = null, details = details - 'score_breakdown'
+            where week_start = %s and concept_id = any(%s)
+            """,
+            (week, unmeasured),
+        )
         cur.executemany(
             """
             update gapfinder.concept_weekly
@@ -93,6 +108,6 @@ def run(conn, snapshot_date: date) -> dict:
             [(score, i + 1, json.dumps(breakdown), concept_id, week)
              for i, (score, concept_id, breakdown) in enumerate(scored)],
         )
-    log.info("Scored %d concepts for the week of %s", len(scored), week)
+    log.info("Scored %d concepts for the week of %s (%d not looked up yet)", len(scored), week, len(unmeasured))
     return {"records": len(scored)}
 

@@ -43,6 +43,23 @@ Logs go to the screen and to `logs/gapfinder.log`. Every run is also recorded
 in the database (`gapfinder.pipeline_runs` and `gapfinder.source_runs`),
 including errors and estimated cost.
 
+## Dashboard
+
+Double-click **Open Dashboard.bat** in this folder. It opens in your browser
+(http://localhost:8501); keep the black window open while you use it.
+
+- **Opportunities**: concepts ranked by opportunity score, with filters
+  (rising sources, TikTok saturation, first spotted, status, search). Select
+  rows to shortlist, mark reviewed, reject, or open one.
+- **Concept details**: every source's history side by side, why it scored
+  what it did, and the items behind it. Fix grouping mistakes here: move
+  items to another or a new concept (split), mark items "not a product",
+  merge two concepts, or edit the search keywords that get looked up.
+- **Pipeline health**: recent runs and failures, spend this month, database
+  size, and live Kalodata/Apify balances.
+
+The dashboard only accepts connections from this computer.
+
 ## Where things are
 
 | Folder / file | What it does |
@@ -50,7 +67,11 @@ including errors and estimated cost.
 | `config.yaml` | All adjustable settings (collectors on/off, retries, spending caps, later the score weights) |
 | `core/` | Shared helpers: settings, database connection, logging, retries |
 | `collectors/` | One file per data source. `base.py` handles caching, retries, raw storage, cost caps and error handling for all of them |
-| `normalize/`, `concepts/`, `features/`, `scoring/`, `dashboard/` | Later milestones |
+| `normalize/` | Turns raw responses into items and daily snapshots |
+| `concepts/` | Groups items into product concepts with Claude |
+| `features/`, `scoring/` | Weekly metrics per concept and the opportunity score |
+| `dashboard/` | The Streamlit dashboard |
+| `tests/test_metrics.py` | Checks the metric and score math |
 | `supabase/migrations/` | The database schema, as SQL files |
 | `run_daily.py` | Runs the whole pipeline in order |
 | `check_setup.py` | Verifies keys, database connection and tables |

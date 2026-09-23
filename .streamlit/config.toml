@@ -1,0 +1,9 @@
+# Dashboard settings.
+[server]
+# Only this computer can open the dashboard (it can change data, and it uses
+# the database password from .env). Don't change this to 0.0.0.0.
+address = "localhost"
+port = 8501
+
+[browser]
+gatherUsageStats = false

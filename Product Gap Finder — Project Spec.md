@@ -141,6 +141,15 @@ Enrichment keywords are prioritized by score: shortlisted concepts first, then t
 - Filters: minimum demand breadth, maximum saturation, trend age
 - Manual controls: merge or split concepts, mark a concept as "reviewed," "shortlisted," or "rejected"
 
+Implemented (Milestone 4) in `dashboard/` with three pages: Opportunities, Concept details, Pipeline health.
+- Sparklines: Google interest over the last 6 months and score by week.
+- "Trend age" filter = when the concept was first spotted.
+- Split = move selected items to another or a new concept. Items can also be marked "not a product".
+- Keywords are editable, because they drive the enrichment lookups.
+- A Pipeline health page shows failures, spend and credit balances, because the scheduled run has no other visible output.
+- Launched with `Open Dashboard.bat` and bound to localhost only (`.streamlit/config.toml`).
+- Concepts not looked up yet have no score and no rank (rather than 0).
+
 ## Build order
 1. Repo skeleton, `.env.example`, Supabase schema (migrations), logging, and the `run_daily.py` shell
 2. Kalodata collector. Verify it with real data before moving on.
