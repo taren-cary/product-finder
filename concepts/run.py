@@ -118,6 +118,17 @@ def run(conn, snapshot_date) -> dict:
         batch = items[start:start + size]
         try:
             results, cost = _classify_batch(client, conn, cfg, batch)
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+            raise RuntimeError(f"Anthropic rejected the API key; check ANTHROPIC_API_KEY in .env ({e})")
+        except anthropic.BadRequestError as e:
+            if "credit balance" in str(e).lower():
+                # No point trying the other batches; what's done so far is saved.
+                raise RuntimeError(
+                    f"Anthropic account is out of credit after {classified} items. Add credit at "
+                    "console.anthropic.com (Plans & Billing); the rest will be grouped on the next run."
+                )
+            log.warning("Batch of %d items failed, will retry next run: %s", len(batch), e)
+            continue
         except Exception as e:
             log.warning("Batch of %d items failed, will retry next run: %s", len(batch), e)
             continue

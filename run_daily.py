@@ -2,6 +2,7 @@
 
     python run_daily.py                 # run everything
     python run_daily.py --only kalodata # run just one collector now (for testing)
+    python run_daily.py --force         # run every switched-on collector now, ignoring schedules
 
 Each step runs on its own: if one fails, it is logged and the rest still run.
 Windows Task Scheduler calls this once a day at noon. Each collector has its
@@ -97,9 +98,10 @@ def is_due(name: str, schedule: str, today: date) -> bool:
     return False
 
 
-def collectors_to_run(only: str | None, today: date):
+def collectors_to_run(only: str | None, today: date, force: bool = False):
     """Pick the collectors that are switched on and due today.
-    --only runs that one collector regardless of its switch or schedule."""
+    --only runs that one collector regardless of its switch or schedule.
+    --force runs every switched-on collector regardless of its schedule."""
     if only:
         return [c for c in ALL_COLLECTORS if c.name == only]
 
@@ -110,6 +112,9 @@ def collectors_to_run(only: str | None, today: date):
         if not cfg.get("enabled", False):
             continue
         schedule = cfg.get("schedule", "weekly")
+        if force:
+            chosen.append(c)
+            continue
         try:
             due = is_due(c.name, schedule, today)
         except Exception:
@@ -125,6 +130,8 @@ def collectors_to_run(only: str | None, today: date):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the daily Product Gap Finder pipeline.")
     parser.add_argument("--only", help="run just this one collector, e.g. kalodata")
+    parser.add_argument("--force", action="store_true",
+                        help="run every switched-on collector now, ignoring schedules")
     args = parser.parse_args()
 
     setup_logging()
@@ -143,7 +150,7 @@ def main() -> int:
         return 1
 
     results = {}
-    collectors = collectors_to_run(args.only, today)
+    collectors = collectors_to_run(args.only, today, args.force)
     if args.only and not collectors:
         log.error("No collector named %r. Known: %s", args.only, [c.name for c in ALL_COLLECTORS])
 

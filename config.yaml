@@ -40,7 +40,7 @@ concepts:
   batch_size: 40              # items per request to Claude
   max_items_per_run: 1500
   max_concepts_in_prompt: 300 # beyond this, only the closest-matching concepts are sent
-  max_cost_per_run_usd: 5.00  # stop for the day once this is reached
+  max_cost_per_run_usd: 10.00 # stop for the day once this is reached
 
 # Product types to never treat as products (TikTok Shop prohibited or
 # restricted items). Fill in from TikTok Shop's list; plain words are fine.
