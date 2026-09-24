@@ -16,7 +16,9 @@ where
                       (small weights: they support, they don't lead)
     confirmation_multiplier = 1 + confirmation_bonus x (number of outside sources rising)
 
-Only rising growth counts (falling adds 0), capped at velocity_cap. So the top
+Only rising growth counts (falling adds 0). Growth is capped at velocity_cap
+and counted on a log scale (ln(1 + growth)), so +300% ranks below +3,000% but a
+single huge number can't swamp everything else. So the top
 of the list is: climbing on TikTok, TikTok Shop still open, confirmed by
 Google/Amazon/Reddit, and a steady climb rather than a spike. A product
 rising on Amazon or Google but not yet on TikTok still scores, lower, as an
@@ -28,6 +30,7 @@ Every number here is in config.yaml under "scoring".
 
 import json
 import logging
+import math
 from datetime import date
 
 from core.config import settings
@@ -41,19 +44,23 @@ def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
     cap = cfg["velocity_cap"]
     threshold = settings["features"]["rising_threshold"]
 
+    def scaled(v: float) -> float:
+        v = min(v, cap)
+        return math.log1p(v) if cfg.get("growth_scale") == "log" else v
+
     def rising(sources):
         out = {}
         for s in sources:
             v = row.get(f"velocity_{s}")
             if v is not None and float(v) > 0:
-                out[s] = min(float(v), cap)
+                out[s] = scaled(float(v))
         return out
 
     tiktok_rising = rising(TIKTOK_SOURCES)
     outside_rising = rising(OUTSIDE_SOURCES)
     tiktok_demand = sum(cfg["tiktok_weights"][s] * v for s, v in tiktok_rising.items())
     outside_demand = sum(cfg["confirmation_weights"][s] * v for s, v in outside_rising.items())
-    confirmations = sum(1 for v in outside_rising.values() if v >= threshold)
+    confirmations = sum(1 for v in outside_rising.values() if v >= scaled(threshold))
     confirmation = 1 + cfg["confirmation_bonus"] * confirmations
 
     sat = row.get("tiktok_saturation")

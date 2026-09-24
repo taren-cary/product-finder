@@ -71,33 +71,46 @@ assert latest_growth([(date(2026, 9, 28), 100)]) is None
 assert sustained_from_series([10, 12, 15, 20]) == 1.0 and sustained_from_series([10, 9, 8]) == 0.5
 assert sustained_from_series([10, 12]) is None
 
-# TikTok-first scores
+# TikTok-first scores (growth counted on a log scale: ln(1 + g))
+from math import log1p as L
+
+
 def row(**kw):
     base = {f"velocity_{s}": None for s in ("tiktokshop", "shopvideos", "tiktok", "google", "amazon", "reddit")}
     base.update({"sustained_factor": 1.0, "spike_risk": False, "margin_factor": 1.0, "tiktok_saturation": 0.0})
     base.update(kw)
     return base
 
+
 tiktok_only, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2), S)
-assert abs(tiktok_only - 100 * (0.4 * 1.0 + 0.2 * 0.5)) < 0.01, tiktok_only
+assert abs(tiktok_only - 100 * (L(0.4) + 0.5 * L(0.2))) < 0.01, tiktok_only
 
 # Confirmations add a little on their own and multiply the score
 confirmed, b = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2,
                                velocity_google=0.3, velocity_amazon=0.2), S)
-expected = 100 * (0.4 + 0.1 + 0.25 * 0.3 + 0.25 * 0.2) * (1 + 0.15 * 2)
+expected = 100 * (L(0.4) + 0.5 * L(0.2) + 0.25 * L(0.3) + 0.25 * L(0.2)) * (1 + 0.15 * 2)
 assert abs(confirmed - expected) < 0.01 and b["confirmations"] == 2, (confirmed, expected)
 
 # The same outside demand without TikTok momentum scores far lower (arbitrage candidate)
 outside_only, _ = opportunity(row(velocity_google=0.3, velocity_amazon=0.2), S)
 assert 0 < outside_only < tiktok_only / 2, (outside_only, tiktok_only)
 
-# Headroom: a crowded TikTok Shop cuts the score to 1/5; a spike halves it
+# Bigger growth ranks higher, but a 10x bigger number isn't 10x the score
+g3, _ = opportunity(row(velocity_tiktokshop=3.0), S)
+g30, _ = opportunity(row(velocity_tiktokshop=30.0), S)
+g300, _ = opportunity(row(velocity_tiktokshop=300.0), S)
+assert g3 < g30 < 3 * g3 and g300 == g30, (g3, g30, g300)   # capped at +3,000%
+
+# Headroom: a crowded TikTok Shop cuts the score to 1/5; unchecked counts as 0.7; a spike halves it
 crowded, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, tiktok_saturation=1.0), S)
+unchecked, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, tiktok_saturation=None), S)
+open_shop, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, tiktok_saturation=0.3), S)
 spiky, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, spike_risk=True), S)
 assert abs(crowded - tiktok_only / 5) < 0.01 and abs(spiky - tiktok_only / 2) < 0.01
+assert abs(unchecked - tiktok_only / (1 + 4 * 0.7)) < 0.01 and open_shop > unchecked
 
 falling, _ = opportunity(row(velocity_tiktokshop=-0.3, velocity_google=-0.2), S)
 assert falling == 0
 print("all metric checks passed")
-print(f"example scores: TikTok only={tiktok_only}  TikTok+2 confirmations={confirmed}  "
-      f"outside only={outside_only}  crowded={crowded}  spike={spiky}")
+print(f"example scores: TikTok only={tiktok_only}  +2 confirmations={confirmed}  outside only={outside_only}  "
+      f"growth +300%={g3} +3000%={g30}  unchecked saturation={unchecked}  crowded={crowded}")

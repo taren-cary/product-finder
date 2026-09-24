@@ -49,7 +49,7 @@ excluded_product_types: []
 # --- Metrics (features step) ---
 features:
   rising_threshold: 0.10       # a source counts as "rising" at +10% or more
-  velocity_cap: 2.0            # growth above +200% counts as +200% (stops one wild number dominating)
+  velocity_cap: 30.0           # growth above +3,000% counts as +3,000% (stops one wild number dominating)
   tiktok_max_age_weeks: 4      # use a concept's TikTok checks from up to 4 weeks ago
   google_max_age_weeks: 8      # use a concept's Google check from up to 8 weeks ago
   google_min_interest: 5       # ignore Google growth when interest is below this (0-100 scale; tiny numbers are noise)
@@ -97,9 +97,12 @@ scoring:
     amazon: 0.25
     reddit: 0.25               # set to 1.0 to treat Reddit like TikTok (early-riser signal)
   confirmation_bonus: 0.15     # ...and each rising outside source multiplies the score by +15%
-  velocity_cap: 2.0
+  velocity_cap: 30.0           # growth above +3,000% counts as +3,000%
+  growth_scale: log            # log: +300% < +1,000% < +3,000% but no single number dominates
+                               # (a growth g counts as ln(1 + g): +20% ~ 0.18, +300% ~ 1.4, +3,000% ~ 3.4)
   saturation_strength: 4       # saturation 1.0 cuts the score to 1/5; 0.5 cuts it to 1/3
-  unknown_saturation: 0.5      # assumed when there's no TikTok Shop data yet
+  unknown_saturation: 0.7      # assumed when TikTok Shop hasn't been checked yet (cautious: checked
+                               # products with few sellers should rank above unchecked ones)
   unknown_sustained: 0.75      # assumed when there's no history yet
   spike_penalty: 0.5           # multiply by this when the rise looks like a one-off spike
 

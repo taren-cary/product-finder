@@ -111,7 +111,8 @@ def watch_keywords(conn, limit: int, source: str, key_for, purpose: str = "tikto
                     if c["opportunity_score"] is not None and not looked_up_since(c["kw"], recheck)]
     else:
         rising_threshold = settings["features"]["rising_threshold"]
-        ordered += [c["kw"] for c in fresh_only if c["on_tiktok_lists"]]
+        ordered += [c["kw"] for c in by_score if c["on_tiktok_lists"]]
+        ordered += [c["kw"] for c in fresh_only if c["on_tiktok_lists"]]   # unscored ones next
         ordered += [c["kw"] for c in fresh_only if last.get(key_for(c["kw"])) is None]
         ordered += [c["kw"] for c in fresh_only
                     if c["outside_velocity"] is not None and float(c["outside_velocity"]) >= rising_threshold]
