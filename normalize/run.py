@@ -19,6 +19,8 @@ import re
 
 from psycopg.types.json import Jsonb
 
+from core.config import settings
+
 log = logging.getLogger(__name__)
 
 CHUNK = 50  # raw responses processed per database round trip
@@ -115,7 +117,11 @@ def _reddit(row) -> list[dict]:
 
 
 def _google_trends(row) -> list[dict]:
-    """Rising searches related to a keyword we track -> new product ideas."""
+    """Rising searches related to a keyword we track -> new product ideas.
+    Off by default (config.yaml: google_trends.rising_searches_as_items); the
+    raw searches stay saved either way."""
+    if not settings["google_trends"].get("rising_searches_as_items", False):
+        return []
     parent = row["request_key"].removeprefix("trends:")
     rising = ((row["payload"].get("relatedSearches") or {}).get("rising")) or []
     items = []

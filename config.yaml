@@ -235,6 +235,8 @@ kalodata_keywords:
 # ~$0.026 per keyword. 60 keywords weekly = ~$1.60/week.
 google_trends:
   max_keywords: 60            # top TikTok candidates + watchlist + shortlisted
+  rising_searches_as_items: false   # true = turn "rising related searches" into items for Claude to group
+                                    # (off: mostly variants of existing concepts, and costly to group)
   batch_size: 25
   geo: US
   time_range: today 12-m      # 12 months of weekly data points
