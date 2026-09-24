@@ -23,6 +23,7 @@ from collectors.kalodata_keywords import KalodataKeywordsCollector
 from collectors.reddit import RedditCollector
 from collectors.tiktok import TikTokCollector
 from concepts import fit as tiktok_fit
+from concepts import refine as refine_keywords
 from concepts import run as concepts
 from core.config import settings
 from core.db import connect
@@ -38,6 +39,7 @@ log = logging.getLogger("run_daily")
 #   1. discovery collectors    - find candidate products (TikTok Shop lists,
 #                                Amazon Best Sellers, Reddit)
 #   2. steps                   - raw data -> items -> concepts -> TikTok-fit verdict
+#                                -> narrow any keyword that was too broad
 #   3. TikTok collectors       - look up TikTok-fit concepts on TikTok Shop and TikTok
 #   4. score                   - weekly metrics + a first opportunity score
 #   5. confirmation collectors - Google Trends for the top TikTok candidates
@@ -53,6 +55,7 @@ STEPS = [
     ("normalize", normalize.run),
     ("concepts", concepts.run),
     ("tiktok_fit", tiktok_fit.run),
+    ("refine_keywords", refine_keywords.run),   # narrow keywords that were too broad last check
 ]
 
 TIKTOK_COLLECTORS = [

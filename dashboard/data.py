@@ -46,6 +46,9 @@ def ranking(week: date) -> pd.DataFrame:
                w.velocity_google, w.velocity_amazon, w.velocity_reddit, w.velocity_tiktok,
                w.velocity_tiktokshop, w.tiktok_saturation, w.sellers, w.creators,
                w.shop_revenue_7d, w.lead_lag_gap, w.paid_share, w.spike_risk, w.sustained_factor,
+               (w.details->'crowding'->>'new_product_share')::numeric as new_product_share,
+               (w.details->'shop'->>'revenue_per_active_seller')::numeric as revenue_per_seller,
+               (w.tiktok_saturation is not null) as saturation_checked,
                (w.sellers is not null or w.hashtag_views is not null
                 or coalesce((w.details->'google'->>'points')::int, 0) > 0) as has_data,
                (select count(*) from gapfinder.item_concept_map m where m.concept_id = c.id) as items

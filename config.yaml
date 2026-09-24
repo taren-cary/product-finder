@@ -71,7 +71,18 @@ features:
     google: 0.25
     amazon: 0.25
     reddit: 0.25
-  saturation_reference:        # the level at which each signal counts as "fully crowded"
+  # --- TikTok Shop saturation (relative: each signal is ranked against all
+  # --- other checked concepts, so the scores spread from 0 to 1) ---
+  active_seller_min_revenue_7d: 300   # a seller counts as active above $300 in the last 7 days
+  new_product_days: 60                # "new product" = launched within 60 days of the check
+  crowding_weights:            # how much each signal counts toward tiktok_saturation
+    active_sellers: 0.30       # more active sellers = more crowded
+    creators: 0.20             # more creators already promoting it = more crowded
+    new_product_share: 0.20    # more revenue going to new products = more ROOM
+    revenue_per_active_seller: 0.15   # more money per seller = more ROOM
+    top3_share: 0.05           # top 3 sellers taking most of it = dominated
+    hashtag_views: 0.10        # huge organic hashtag = well known
+  saturation_reference:        # (old absolute scale; kept for reference, no longer used)
     sellers: 100               # distinct sellers among the top 100 TikTok Shop products
     creators: 100              # distinct creators among the top 100 shoppable videos
     revenue_7d: 1000000        # weekly TikTok Shop revenue of those products, USD

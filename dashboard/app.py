@@ -65,13 +65,15 @@ def opportunities() -> None:
     search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
 
     df = data.ranking(week)
-    g = st.columns([1.3, 1.3, 1.6, 3])
+    g = st.columns([1.3, 1.3, 1.6, 1.6, 1.4])
     only_data = g[0].toggle("Only concepts with data", value=True,
                             help="Concepts not looked up yet have no score.")
     only_fit = g[1].toggle("Only TikTok-fit", value=True,
                            help="Hide concepts judged not sellable on TikTok Shop.")
     only_lists = g[2].toggle("On TikTok Shop lists this week", value=False,
                              help="Only concepts that showed up in this week's rising / new / viral TikTok Shop lists.")
+    only_checked = g[3].toggle("Only saturation-checked", value=True,
+                               help="Only concepts whose TikTok Shop sellers and creators have been checked.")
 
     view = df[df["review_status"].isin(statuses)]
     if only_fit:
@@ -80,6 +82,8 @@ def opportunities() -> None:
         view = view[view["has_data"].fillna(False)]
     if only_lists:
         view = view[view["on_tiktok_lists"].fillna(False).astype(bool)]
+    if only_checked:
+        view = view[view["saturation_checked"].fillna(False).astype(bool)]
     if min_confirm:
         view = view[view["confirmations"].fillna(0) >= min_confirm]
     if max_sat < 1.0:
@@ -116,7 +120,8 @@ def opportunities() -> None:
     st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
                "Scores firm up after 2–4 weeks of history.")
     columns = ["rank", "name", "opportunity_score", "tiktok_momentum", "velocity_tiktokshop",
-               "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "confirmations",
+               "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "new_product_share",
+               "revenue_per_seller", "confirmations",
                "google_trend", "score_trend", "on_tiktok_lists", "lead_lag_gap", "paid_share", "spike_risk",
                "category", "review_status", "first_spotted", "items"]
     event = st.dataframe(
@@ -143,8 +148,14 @@ def opportunities() -> None:
             "score_trend": st.column_config.LineChartColumn("Score by week"),
             "velocity_tiktokshop": st.column_config.NumberColumn("TikTok Shop growth", format="percent"),
             "tiktok_saturation": st.column_config.ProgressColumn("TikTok saturation", min_value=0,
-                max_value=1, format="%.2f", help="0 = empty, 1 = crowded."),
-            "sellers": st.column_config.NumberColumn("Sellers", width="small"),
+                max_value=1, format="%.2f",
+                help="Compared with every other checked concept: 0.1 = among the least crowded, 0.9 = among the most."),
+            "sellers": st.column_config.NumberColumn("Active sellers", width="small",
+                help="Sellers with $300+ of sales in the last 7 days for this keyword."),
+            "new_product_share": st.column_config.NumberColumn("New products' share", format="percent",
+                help="Share of TikTok Shop revenue going to products launched in the last 60 days. High = market still open."),
+            "revenue_per_seller": st.column_config.NumberColumn("Revenue / active seller", format="dollar",
+                help="Last 7 days. High with few sellers = room for another."),
             "creators": st.column_config.NumberColumn("Creators", width="small"),
             "lead_lag_gap": st.column_config.NumberColumn("Lead-lag gap", format="percent",
                 help="Outside demand growth minus TikTok Shop supply growth. Positive = the gap you want."),

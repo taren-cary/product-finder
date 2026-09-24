@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import settings
-from features.run import (amazon_velocity, google_metrics, growth, latest_growth, mention_velocity,
+from features.run import (amazon_velocity, crowding_parts, google_metrics, growth, latest_growth,
+                          mention_velocity, percentile, relative_saturation,
                           saturation, shop_stats, sustained_from_series, video_stats,
                           weekly_growth, weighted_velocity)
 from scoring.run import opportunity
@@ -70,6 +71,31 @@ assert abs(latest_growth([(date(2026, 9, 14), 100), (date(2026, 9, 21), 90), (da
 assert latest_growth([(date(2026, 9, 28), 100)]) is None
 assert sustained_from_series([10, 12, 15, 20]) == 1.0 and sustained_from_series([10, 9, 8]) == 0.5
 assert sustained_from_series([10, 12]) is None
+
+# Active sellers, revenue per active seller, new products' share
+from datetime import date as _d
+stats = shop_stats([
+    {"product_id": "a", "seller_id": "s1", "revenue": 5000, "launch_date": "2026-09-01"},   # new, active
+    {"product_id": "b", "seller_id": "s2", "revenue": 1000, "launch_date": "2025-01-01"},   # old, active
+    {"product_id": "c", "seller_id": "s3", "revenue": 100, "launch_date": "2026-09-10"},    # new, not active
+], checked_on=_d(2026, 9, 24), active_min_revenue=300, new_product_days=60)
+assert stats["sellers"] == 3 and stats["active_sellers"] == 2
+assert stats["revenue_per_active_seller"] == 3000.0
+assert abs(stats["new_product_share"] - 5100 / 6100) < 0.001 and stats["maxed"] is False
+
+# Percentile ranking and relative saturation
+assert percentile(5, [1, 5, 9]) == 0.5 and percentile(1, [1, 5, 9]) == 1 / 6
+W = F["crowding_weights"]
+quiet = {"active_sellers": 3, "creators": 5, "top3_share": 0.9, "hashtag_views": 1e5,
+         "revenue_per_active_seller": 9000, "new_product_share": 0.8}
+busy = {"active_sellers": 90, "creators": 95, "top3_share": 0.3, "hashtag_views": 5e9,
+        "revenue_per_active_seller": 500, "new_product_share": 0.05}
+middle = {k: (quiet[k] + busy[k]) / 2 for k in quiet}
+sats = relative_saturation({"quiet": quiet, "busy": busy, "middle": middle,
+                            "unchecked": {k: None for k in quiet}}, W)
+assert sats["unchecked"] is None
+assert sats["quiet"] < sats["middle"] < sats["busy"], sats
+assert sats["quiet"] < 0.35 and sats["busy"] > 0.65, sats      # spread out, not squeezed together
 
 # TikTok-first scores (growth counted on a log scale: ln(1 + g))
 from math import log1p as L

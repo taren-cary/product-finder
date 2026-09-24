@@ -14,8 +14,12 @@ TikTok comes first (keyword = the concept's main search term):
   velocity_shopvideos  Views of shoppable TikTok videos for the keyword, weekly growth.
   velocity_tiktok      TikTok hashtag total views, weekly growth.
   tiktok_momentum      Weighted blend of those three (weights in config.yaml).
-  tiktok_saturation    0 (nobody selling) to 1 (crowded): sellers, creators,
-                       TikTok Shop revenue, top-3 seller share, hashtag views.
+  tiktok_saturation    0 (least crowded) to 1 (most crowded), RELATIVE to all
+                       other checked concepts: active sellers, creators, top-3
+                       seller share and hashtag views count as crowding;
+                       revenue per active seller and new products' share of
+                       revenue count as room. Each is ranked against the other
+                       concepts, then blended (weights in config.yaml).
 
 Confirmation from outside TikTok:
 
@@ -119,15 +123,28 @@ def mention_velocity(current: int, previous: int, min_mentions: int) -> float | 
     return growth(current, max(previous, 1))
 
 
-def shop_stats(products: list[dict]) -> dict:
-    """Sellers, revenue and concentration from a Kalodata product search."""
+def shop_stats(products: list[dict], checked_on: date | None = None,
+               active_min_revenue: float = 300, new_product_days: int = 60) -> dict:
+    """Sellers, revenue and concentration from a Kalodata product search.
+
+    active_sellers:   sellers whose matching products made at least
+                      active_min_revenue in the last 7 days (not every listing)
+    new_product_share: share of revenue from products launched within
+                      new_product_days of the check (new products winning = open market)
+    maxed:            the search hit Kalodata's 100-product limit, i.e. the
+                      keyword is broad and this measures a whole category
+    """
     revenue_by_seller = defaultdict(float)
-    total = 0.0
+    total = new_revenue = 0.0
     for p in products:
         rev = float(p.get("revenue") or 0)
         total += rev
         revenue_by_seller[p.get("seller_id") or p.get("product_id")] += rev
+        launched = _parse_date(p.get("launch_date"))
+        if checked_on and launched and (checked_on - launched).days <= new_product_days:
+            new_revenue += rev
     top3 = sum(sorted(revenue_by_seller.values(), reverse=True)[:3])
+    active = [r for r in revenue_by_seller.values() if r >= active_min_revenue]
     # Kalodata's own growth figure (percent, 7 days vs the 7 before), revenue-weighted.
     weighted = [(min(float(p["revenue_growth_rate"]), 500.0), float(p.get("revenue") or 0))
                 for p in products if p.get("revenue_growth_rate") is not None]
@@ -136,10 +153,21 @@ def shop_stats(products: list[dict]) -> dict:
     return {
         "products": len(products),
         "sellers": len({p.get("seller_id") for p in products if p.get("seller_id")}),
+        "active_sellers": len(active),
+        "revenue_per_active_seller": round(sum(active) / len(active), 2) if active else None,
+        "new_product_share": round(new_revenue / total, 3) if total > 0 and checked_on else None,
         "revenue": round(total, 2),
         "top3_share": round(top3 / total, 3) if total > 0 else None,
         "kalodata_growth": kalodata_growth,
+        "maxed": len(products) >= 100,
     }
+
+
+def _parse_date(value) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except ValueError:
+        return None
 
 
 def video_stats(videos: list[dict]) -> dict:
@@ -179,6 +207,56 @@ def saturation(parts: dict, cfg: dict) -> float | None:
         return None
     total_weight = sum(weights[k] for k in available)
     return round(sum(weights[k] * v for k, v in available.items()) / total_weight, 3)
+
+
+# How each crowding signal points: +1 = more of it means more crowded,
+# -1 = more of it means more room (so it's flipped).
+CROWDING_DIRECTION = {
+    "active_sellers": 1, "creators": 1, "top3_share": 1, "hashtag_views": 1,
+    "revenue_per_active_seller": -1, "new_product_share": -1,
+}
+
+
+def crowding_parts(shop: dict, vstats: dict, hashtag_views) -> dict:
+    """The raw crowding signals for one concept (None where we have no data)."""
+    has_shop = shop["products"] > 0
+    return {
+        "active_sellers": shop["active_sellers"] if has_shop else None,
+        "revenue_per_active_seller": shop["revenue_per_active_seller"] if has_shop else None,
+        "new_product_share": shop["new_product_share"] if has_shop else None,
+        "top3_share": shop["top3_share"] if has_shop else None,
+        "creators": vstats["creators"] if vstats["videos"] else None,
+        "hashtag_views": hashtag_views,
+    }
+
+
+def percentile(value: float, values: list[float]) -> float:
+    """Where value sits among values, 0 (lowest) to 1 (highest); ties share the middle."""
+    below = sum(1 for v in values if v < value)
+    equal = sum(1 for v in values if v == value)
+    return (below + 0.5 * equal) / len(values)
+
+
+def relative_saturation(parts_by_concept: dict, weights: dict) -> dict:
+    """concept -> saturation 0 to 1, by ranking each crowding signal against
+    every other checked concept (0.1 = among the least crowded, 0.9 = among
+    the most). Concepts without TikTok Shop data get None."""
+    columns = {k: [p[k] for p in parts_by_concept.values() if p.get(k) is not None]
+               for k in CROWDING_DIRECTION}
+    out = {}
+    for cid, parts in parts_by_concept.items():
+        if parts.get("active_sellers") is None and parts.get("creators") is None:
+            out[cid] = None
+            continue
+        scores = {}
+        for k, direction in CROWDING_DIRECTION.items():
+            if parts.get(k) is None or not columns[k]:
+                continue
+            p = percentile(parts[k], columns[k])
+            scores[k] = p if direction > 0 else 1 - p
+        total = sum(weights[k] for k in scores)
+        out[cid] = round(sum(weights[k] * v for k, v in scores.items()) / total, 3) if total else None
+    return out
 
 
 def weighted_velocity(velocities: dict, weights: dict, cap: float) -> float | None:
@@ -348,7 +426,7 @@ def run(conn, snapshot_date: date) -> dict:
 
     concepts = conn.execute(
         """
-        select id, name, keywords from gapfinder.concepts
+        select id, name, keywords, keyword_before_refinement from gapfinder.concepts
         where merged_into_id is null and review_status <> 'rejected' and tiktok_fit is true
         """
     ).fetchall()
@@ -361,18 +439,29 @@ def run(conn, snapshot_date: date) -> dict:
     amazon = _amazon_ranks(conn, cur_start, cur_end, prev_start, prev_end)
     reddit = _reddit_mentions(conn, snapshot_date)
 
-    rows = []
+    rows, parts_by_concept = [], {}
     for c in concepts:
-        kw = concept_keyword(c)
-        tag = to_hashtag(kw)
+        # The concept's current keyword first; if it hasn't been checked yet
+        # (e.g. it was just narrowed), fall back to its earlier keywords.
+        candidates = [concept_keyword(c)] + [" ".join(k.lower().split()) for k in (c["keywords"] or [])]
+        if c.get("keyword_before_refinement"):
+            candidates.append(c["keyword_before_refinement"])
+        kw = next((k for k in candidates if ("kalodata_keywords", f"products:{k}") in tiktok_latest),
+                  candidates[0])
+        tag = next((to_hashtag(k) for k in candidates if ("tiktok", f"hashtag:{to_hashtag(k)}") in tiktok_latest),
+                   to_hashtag(kw))
+        g_kw = next((k for k in candidates if ("google_trends", f"trends:{k}") in google_latest), kw)
         pkey, vkey, hkey = f"products:{kw}", f"videos:{kw}", f"hashtag:{tag}"
-        details = {"keyword": kw, "hashtag": tag}
+        details = {"keyword": candidates[0], "keyword_used": kw, "hashtag": tag}
 
         # --- TikTok: the core signal ---
         prod = tiktok_latest.get(("kalodata_keywords", pkey))
         vids = tiktok_latest.get(("kalodata_keywords", vkey))
         tag_row = tiktok_latest.get(("tiktok", hkey))
-        shop = shop_stats((prod["payload"].get("data") or []) if prod else [])
+        shop = shop_stats((prod["payload"].get("data") or []) if prod else [],
+                          checked_on=prod["snapshot_date"] if prod else None,
+                          active_min_revenue=cfg["active_seller_min_revenue_7d"],
+                          new_product_days=cfg["new_product_days"])
         vstats = video_stats((vids["payload"].get("data") or []) if vids else [])
         hashtag_views = (tag_row["payload"] or {}).get("total_views") if tag_row else None
         has_shop = shop["products"] > 0
@@ -394,7 +483,7 @@ def run(conn, snapshot_date: date) -> dict:
         details["tiktok_listings_this_week"] = listed
 
         # --- Confirmation from outside TikTok ---
-        g_row = google_latest.get(("google_trends", f"trends:{kw}"))
+        g_row = google_latest.get(("google_trends", f"trends:{g_kw}"))
         g = google_metrics((g_row["payload"] if g_row else {}) or {}, cfg)
         g["checked"] = str(g_row["snapshot_date"]) if g_row else None
         details["google"] = g
@@ -410,13 +499,10 @@ def run(conn, snapshot_date: date) -> dict:
         all_v = {**tiktok_v, **outside_v}
         breadth = sum(1 for v in all_v.values() if v is not None and v >= cfg["rising_threshold"])
 
-        sat = saturation({
-            "sellers": shop["sellers"] if has_shop else None,
-            "creators": vstats["creators"] if vstats["videos"] else None,
-            "revenue": shop["revenue"] if has_shop else None,
-            "top3_share": shop["top3_share"],
-            "hashtag_views": hashtag_views,
-        }, cfg)
+        # Saturation is filled in after the loop: each concept is ranked
+        # against all the others.
+        parts_by_concept[c["id"]] = crowding_parts(shop, vstats, hashtag_views)
+        details["crowding"] = parts_by_concept[c["id"]]
 
         # Supply growth on TikTok Shop: sellers + creators, per week.
         creators_by_date = dict(_series(history, "kalodata_keywords", vkey, "creators"))
@@ -440,8 +526,8 @@ def run(conn, snapshot_date: date) -> dict:
             "tiktok_momentum": momentum, "on_tiktok_lists": listed > 0,
             "velocity_google": g["velocity"], "velocity_amazon": v_amazon, "velocity_reddit": v_reddit,
             "confirmations": confirmations, "outside_velocity": outside, "demand_breadth": breadth,
-            "tiktok_saturation": sat,
-            "sellers": shop["sellers"] if has_shop else None,
+            "tiktok_saturation": None,
+            "sellers": shop["active_sellers"] if has_shop else None,
             "creators": vstats["creators"] if vstats["videos"] else None,
             "shop_revenue_7d": shop["revenue"] if has_shop else None,
             "top3_seller_share": shop["top3_share"],
@@ -450,6 +536,10 @@ def run(conn, snapshot_date: date) -> dict:
             "spike_risk": g["spike_risk"], "sustained_factor": sustained,
             "details": Jsonb(_round_floats(details)),
         })
+
+    sats = relative_saturation(parts_by_concept, cfg["crowding_weights"])
+    for r in rows:
+        r["tiktok_saturation"] = sats.get(r["concept_id"])
 
     # Concepts that are no longer a TikTok fit (or were rejected/merged) keep
     # their older weeks but get no row for this week.
