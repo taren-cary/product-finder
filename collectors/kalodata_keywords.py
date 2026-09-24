@@ -11,7 +11,9 @@ Cost: 0.1 credits per request, so 0.2 credits per keyword. The number of
 keywords per run is capped in config.yaml (kalodata_keywords.max_keywords).
 """
 
-from collectors.keywords import watch_keywords
+from datetime import timedelta
+
+from collectors.keywords import variant_keywords, watch_keywords
 from collectors.kalodata import CREDITS_PER_PAGE, PAGE_SIZE, KalodataAuthError, KalodataCollector
 from core.config import settings
 from core.retry import PermanentError
@@ -75,6 +77,39 @@ class KalodataKeywordsCollector(KalodataCollector):
                 except Exception as e:
                     self.log.warning("%s search for %r failed, skipping: %s", prefix, kw, e)
 
+        saved += self._search_variants(set(keywords), common, usd_per_page)
+
         after = self.get_balance()
         self.log.info("Credits used this run: %.2f (balance now %.2f)", balance - after, after)
+        return saved
+
+    def _search_variants(self, done: set, common: dict, usd_per_page: float) -> int:
+        """For the top candidates, also search their other keywords (product
+        search only, 0.1 credits each) so seller counts cover shops that word
+        the product differently. Results are merged in the features step."""
+        vcfg = settings["kalodata_keywords"]
+        if not vcfg.get("variant_top_n"):
+            return 0
+        already = done | {r["request_key"].removeprefix("products:") for r in self.conn.execute(
+            "select request_key from gapfinder.raw_responses where source = %s and snapshot_date >= %s",
+            (self.name, self.snapshot_date - timedelta(days=self.snapshot_date.weekday())),
+        ).fetchall()}
+        variants = variant_keywords(self.conn, vcfg["variant_top_n"], vcfg["variants_per_concept"], already)
+        spendable = min(vcfg["per_run_credit_cap"], self.get_balance() - self.cfg["min_balance_reserve"])
+        variants = variants[:max(0, int(spendable / CREDITS_PER_PAGE + 1e-9))]
+        if not variants:
+            return 0
+        self.log.info("Searching %d keyword variants for the top candidates", len(variants))
+        endpoint, extra = SEARCHES["products"]
+        saved = 0
+        for kw in variants:
+            body = {**common, **extra, "keyword": kw}
+            try:
+                self.fetch_cached(f"products:{kw}", lambda: self._fetch_slowly(endpoint, body),
+                                  cost_usd=usd_per_page)
+                saved += 1
+            except KalodataAuthError:
+                raise
+            except Exception as e:
+                self.log.warning("variant search for %r failed, skipping: %s", kw, e)
         return saved

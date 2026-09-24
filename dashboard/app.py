@@ -21,8 +21,8 @@ import pandas as pd  # noqa: E402
 import requests  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from collectors.keywords import to_hashtag  # noqa: E402
-from core.config import require_env  # noqa: E402
+from collectors.keywords import merge_keywords, to_hashtag  # noqa: E402
+from core.config import require_env, settings  # noqa: E402
 from dashboard import charts, data  # noqa: E402
 
 st.set_page_config(page_title="Product Gap Finder", layout="wide")
@@ -309,6 +309,30 @@ def concept_details() -> None:
         charts.line(data.reddit_mentions(concept_id), "week_start", "mentions",
                     "Reddit buy-intent posts per week", "Posts")
 
+    # The TikTok Shop sellers behind the saturation numbers
+    st.subheader("TikTok Shop sellers")
+    min_rev = settings["features"]["active_seller_min_revenue_7d"]
+    # The same search(es) the score used for this concept.
+    used = (latest.get("details") or {}).get("keywords_merged") or merge_keywords(c)[:1]
+    sellers, searches = data.shop_sellers(tuple(used), min_rev)
+    if searches:
+        st.caption("Searched: " + "; ".join(
+            f"“{k}” on {d.strftime('%b %d') if hasattr(d, 'strftime') else d} ({n} products)" for k, d, n in searches)
+            + f". A seller counts as active with ${min_rev:,.0f}+ of sales in the last 7 days. "
+            "Check for products that don't belong: keyword matching isn't perfect.")
+    if not len(sellers):
+        st.caption("Not checked on TikTok Shop yet.")
+    else:
+        st.dataframe(sellers, hide_index=True, width="stretch", column_config={
+            "active": st.column_config.CheckboxColumn("Active", width="small"),
+            "seller": "Seller",
+            "revenue_7d": st.column_config.NumberColumn("Sales, 7 days", format="dollar"),
+            "units_7d": st.column_config.NumberColumn("Units, 7 days"),
+            "products": st.column_config.NumberColumn("Products", width="small"),
+            "top_product": st.column_config.TextColumn("Best-selling product", width="large"),
+            "newest_launch": st.column_config.TextColumn("Newest launch", width="small"),
+        })
+
     # The items behind the concept
     st.subheader("Items in this concept")
     items = data.concept_items(concept_id)
@@ -444,6 +468,11 @@ def pipeline_health() -> None:
 
 
 # =============================================================================
+
+if st.sidebar.button("🔄 Refresh data", help="Reload everything from the database now."):
+    st.cache_data.clear()
+    st.rerun()
+st.sidebar.caption("Data refreshes on its own every minute.")
 
 opportunities_page = st.Page(opportunities, title="Opportunities", icon="📈", default=True)
 concept_page = st.Page(concept_details, title="Concept details", icon="🔎", url_path="concept")

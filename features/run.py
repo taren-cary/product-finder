@@ -50,7 +50,7 @@ from statistics import mean, median
 
 from psycopg.types.json import Jsonb
 
-from collectors.keywords import concept_keyword, to_hashtag
+from collectors.keywords import concept_keyword, merge_keywords, to_hashtag
 from core.config import settings
 
 log = logging.getLogger(__name__)
@@ -458,7 +458,24 @@ def run(conn, snapshot_date: date) -> dict:
         prod = tiktok_latest.get(("kalodata_keywords", pkey))
         vids = tiktok_latest.get(("kalodata_keywords", vkey))
         tag_row = tiktok_latest.get(("tiktok", hkey))
-        shop = shop_stats((prod["payload"].get("data") or []) if prod else [],
+        # Merge the product searches of all the concept's keywords (variants),
+        # counting each product once, so shops that word it differently count too.
+        searched = [kw]
+        if settings["kalodata_keywords"].get("merge_variants"):
+            searched += [k for k in merge_keywords(c) if k != kw]
+        merged, seen_products, used = [], set(), []
+        for k in searched:
+            row_k = tiktok_latest.get(("kalodata_keywords", f"products:{k}"))
+            if not row_k:
+                continue
+            used.append(k)
+            for p in row_k["payload"].get("data") or []:
+                pid = p.get("product_id")
+                if pid not in seen_products:
+                    seen_products.add(pid)
+                    merged.append(p)
+        details["keywords_merged"] = used
+        shop = shop_stats(merged,
                           checked_on=prod["snapshot_date"] if prod else None,
                           active_min_revenue=cfg["active_seller_min_revenue_7d"],
                           new_product_days=cfg["new_product_days"])

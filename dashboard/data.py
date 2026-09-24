@@ -12,7 +12,7 @@ import streamlit as st
 from collectors.keywords import concept_keyword
 from core.db import connect
 
-CACHE_SECONDS = 300
+CACHE_SECONDS = 60
 
 
 def _df(sql: str, params=None) -> pd.DataFrame:
@@ -147,6 +147,50 @@ def weekly_source_series(keyword: str, hashtag: str) -> pd.DataFrame:
     out = shop.join(tag, how="outer").reset_index()
     out.loc[out["shop_revenue"].notna() & (out["sellers"] == 0), "shop_revenue"] = None
     return out
+
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def shop_sellers(keywords: tuple, active_min_revenue: float) -> tuple[pd.DataFrame, list]:
+    """The TikTok Shop products behind a concept's seller count: the latest
+    search for each of its keywords, merged, each product counted once.
+    Returns (one row per seller, [(keyword, date checked, products found)])."""
+    df = _df(
+        """
+        select distinct on (request_key) request_key, snapshot_date, payload
+        from gapfinder.raw_responses
+        where source = 'kalodata_keywords' and request_key = any(%s)
+        order by request_key, snapshot_date desc
+        """,
+        ([f"products:{k}" for k in keywords],),
+    )
+    searches, products, seen = [], [], set()
+    for _, r in df.iterrows():
+        data = r["payload"].get("data") or []
+        searches.append((r["request_key"].removeprefix("products:"), r["snapshot_date"], len(data)))
+        for p in data:
+            if p.get("product_id") not in seen:
+                seen.add(p.get("product_id"))
+                products.append(p)
+    if not products:
+        return pd.DataFrame(), searches
+    rows = {}
+    for p in products:
+        key = p.get("seller_id") or p.get("product_id")
+        s = rows.setdefault(key, {"seller": p.get("seller_name") or "(unknown)", "revenue_7d": 0.0,
+                                  "units_7d": 0, "products": 0, "top_product": "", "_top": -1,
+                                  "newest_launch": None})
+        rev = float(p.get("revenue") or 0)
+        s["revenue_7d"] += rev
+        s["units_7d"] += int(p.get("sales_volumn") or 0)
+        s["products"] += 1
+        if rev > s["_top"]:
+            s["_top"], s["top_product"] = rev, p.get("product_name") or ""
+        launch = str(p.get("launch_date") or "")[:10] or None
+        if launch and (s["newest_launch"] is None or launch > s["newest_launch"]):
+            s["newest_launch"] = launch
+    out = pd.DataFrame(rows.values()).drop(columns="_top").sort_values("revenue_7d", ascending=False)
+    out.insert(0, "active", out["revenue_7d"] >= active_min_revenue)
+    return out, searches
 
 
 @st.cache_data(ttl=CACHE_SECONDS)

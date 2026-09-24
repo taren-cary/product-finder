@@ -77,6 +77,44 @@ def _fit_concepts(conn, week_start: date) -> list[dict]:
     ).fetchall()
 
 
+def merge_keywords(concept) -> list[str]:
+    """All of a concept's search keywords whose TikTok Shop results get merged
+    for its seller count: its keywords, minus a broad one it was narrowed from."""
+    broad = concept.get("keyword_before_refinement")
+    out = []
+    for k in [concept_keyword(concept)] + list(concept["keywords"] or []):
+        k = _normalize(k)
+        if k and k != broad and k not in out:
+            out.append(k)
+    return out
+
+
+def variant_keywords(conn, top_n: int, per_concept: int, already: set) -> list[str]:
+    """Extra wording variants to search for the top_n concepts by score, so
+    their seller counts don't miss shops that describe the product differently."""
+    rows = conn.execute(
+        """
+        select c.name, c.keywords, c.keyword_before_refinement
+        from gapfinder.concepts c
+        join lateral (
+            select opportunity_score from gapfinder.concept_weekly
+            where concept_id = c.id order by week_start desc limit 1
+        ) w on true
+        where c.tiktok_fit is true and c.merged_into_id is null and c.review_status <> 'rejected'
+          and w.opportunity_score is not null
+        order by (c.review_status = 'shortlisted') desc, w.opportunity_score desc
+        limit %s
+        """,
+        (top_n,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        for k in merge_keywords(r)[1:1 + per_concept]:
+            if k not in already and k not in out:
+                out.append(k)
+    return out
+
+
 def watch_keywords(conn, limit: int, source: str, key_for, purpose: str = "tiktok",
                    today: date | None = None) -> list[str]:
     """Up to `limit` keywords to look up, most useful first.
