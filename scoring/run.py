@@ -7,6 +7,7 @@ TikTok leads; everything else confirms:
                 * (1 / (1 + saturation_strength * tiktok_saturation))   # headroom on TikTok Shop
                 * sustained_trend_factor
                 * margin_factor                                        # 1.0 until Phase 2
+                * market_size_factor                                   # < 1 only for tiny markets
                 * 100                                                  # readable numbers
 
 where
@@ -73,7 +74,14 @@ def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
         sustained *= cfg["spike_penalty"]
 
     margin = float(row.get("margin_factor") or 1.0)
-    score = 100 * (tiktok_demand + outside_demand) * confirmation * headroom * sustained * margin
+
+    # Too-small markets: scale the score down in proportion (unchecked = no change).
+    market = 1.0
+    revenue, floor = row.get("shop_revenue_7d"), cfg.get("min_market_revenue_7d") or 0
+    if floor and revenue is not None and float(revenue) < floor:
+        market = max(float(revenue), 0.0) / floor
+
+    score = 100 * (tiktok_demand + outside_demand) * confirmation * headroom * sustained * margin * market
     breakdown = {
         "tiktok_rising": {s: round(v, 3) for s, v in tiktok_rising.items()},
         "outside_rising": {s: round(v, 3) for s, v in outside_rising.items()},
@@ -81,6 +89,7 @@ def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
         "confirmations": confirmations, "confirmation_multiplier": round(confirmation, 3),
         "saturation_used": round(sat, 3), "headroom_factor": round(headroom, 3),
         "sustained_used": round(sustained, 3), "margin_factor": margin,
+        "market_size_factor": round(market, 3),
     }
     return round(score, 3), breakdown
 

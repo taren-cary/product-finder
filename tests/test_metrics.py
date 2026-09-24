@@ -135,6 +135,13 @@ spiky, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, spi
 assert abs(crowded - tiktok_only / 5) < 0.01 and abs(spiky - tiktok_only / 2) < 0.01
 assert abs(unchecked - tiktok_only / (1 + 4 * 0.7)) < 0.01 and open_shop > unchecked
 
+# Tiny markets are scaled down in proportion; big or unchecked ones aren't
+tiny, b_tiny = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, shop_revenue_7d=500), S)
+big, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, shop_revenue_7d=80000), S)
+unknown_size, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, shop_revenue_7d=None), S)
+assert abs(tiny - tiktok_only * 500 / 5000) < 0.01 and b_tiny["market_size_factor"] == 0.1
+assert big == tiktok_only == unknown_size
+
 falling, _ = opportunity(row(velocity_tiktokshop=-0.3, velocity_google=-0.2), S)
 assert falling == 0
 print("all metric checks passed")

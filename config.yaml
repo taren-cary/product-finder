@@ -116,6 +116,9 @@ scoring:
                                # products with few sellers should rank above unchecked ones)
   unknown_sustained: 0.75      # assumed when there's no history yet
   spike_penalty: 0.5           # multiply by this when the rise looks like a one-off spike
+  min_market_revenue_7d: 5000  # TikTok Shop revenue for the keyword (last 7 days) below this is too
+                               # small to matter: the score is scaled down in proportion
+                               # ($2,500 keeps half its score, $500 a tenth). 0 = off.
 
 # --- Keyword watchlist ---
 # Products you want tracked no matter what. Google Trends, TikTok and the

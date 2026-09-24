@@ -65,7 +65,7 @@ def opportunities() -> None:
     search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
 
     df = data.ranking(week)
-    g = st.columns([1.3, 1.3, 1.6, 1.6, 1.4])
+    g = st.columns([1.2, 1.2, 1.6, 1.5, 1.5])
     only_data = g[0].toggle("Only concepts with data", value=True,
                             help="Concepts not looked up yet have no score.")
     only_fit = g[1].toggle("Only TikTok-fit", value=True,
@@ -74,6 +74,9 @@ def opportunities() -> None:
                              help="Only concepts that showed up in this week's rising / new / viral TikTok Shop lists.")
     only_checked = g[3].toggle("Only saturation-checked", value=True,
                                help="Only concepts whose TikTok Shop sellers and creators have been checked.")
+    min_market = g[4].selectbox("Min. TikTok Shop sales / week", [0, 1000, 5000, 25000, 100000], index=2,
+                                format_func=lambda v: "Any" if v == 0 else f"${v:,}",
+                                help="Total TikTok Shop revenue for the keyword over the last 7 days.")
 
     view = df[df["review_status"].isin(statuses)]
     if only_fit:
@@ -84,6 +87,8 @@ def opportunities() -> None:
         view = view[view["on_tiktok_lists"].fillna(False).astype(bool)]
     if only_checked:
         view = view[view["saturation_checked"].fillna(False).astype(bool)]
+    if min_market:
+        view = view[view["shop_revenue_7d"].notna() & (view["shop_revenue_7d"] >= min_market)]
     if min_confirm:
         view = view[view["confirmations"].fillna(0) >= min_confirm]
     if max_sat < 1.0:
@@ -121,7 +126,7 @@ def opportunities() -> None:
                "Scores firm up after 2–4 weeks of history.")
     columns = ["rank", "name", "opportunity_score", "tiktok_momentum", "velocity_tiktokshop",
                "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "new_product_share",
-               "revenue_per_seller", "confirmations",
+               "shop_revenue_7d", "revenue_per_seller", "confirmations",
                "google_trend", "score_trend", "on_tiktok_lists", "lead_lag_gap", "paid_share", "spike_risk",
                "category", "review_status", "first_spotted", "items"]
     event = st.dataframe(
@@ -154,6 +159,8 @@ def opportunities() -> None:
                 help="Sellers with $300+ of sales in the last 7 days for this keyword."),
             "new_product_share": st.column_config.NumberColumn("New products' share", format="percent",
                 help="Share of TikTok Shop revenue going to products launched in the last 60 days. High = market still open."),
+            "shop_revenue_7d": st.column_config.NumberColumn("TikTok Shop sales / week", format="dollar",
+                help="Total revenue of the top matching TikTok Shop products, last 7 days (market size)."),
             "revenue_per_seller": st.column_config.NumberColumn("Revenue / active seller", format="dollar",
                 help="Last 7 days. High with few sellers = room for another."),
             "creators": st.column_config.NumberColumn("Creators", width="small"),
