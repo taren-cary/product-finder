@@ -33,8 +33,11 @@ def _kalodata(row) -> list[dict]:
     if list_name.startswith("categories"):
         return []   # category rankings aren't products; used by the features step
     offset = (int(page or 1) - 1) * 100
+    rows = row["payload"].get("data") or []
+    if rows and "video_id" in rows[0]:
+        return _kalodata_videos(rows, list_name, offset)
     items = []
-    for i, p in enumerate(row["payload"].get("data") or []):
+    for i, p in enumerate(rows):
         if not p.get("product_id") or not p.get("product_name"):
             continue
         rank = offset + i + 1
@@ -47,6 +50,29 @@ def _kalodata(row) -> list[dict]:
             "price": p.get("unit_price"),
             "rank": rank,
             "metrics": metrics,
+        })
+    return items
+
+
+def _kalodata_videos(rows, list_name, offset) -> list[dict]:
+    """Viral shoppable videos. The title usually names the product being sold;
+    the concept step reads it to find the product (like a Reddit post)."""
+    items = []
+    for i, v in enumerate(rows):
+        if not v.get("video_id") or not v.get("video_title"):
+            continue
+        rank = offset + i + 1
+        items.append({
+            "source": "kalodata_video",
+            "source_item_id": v["video_id"],
+            "title": v["video_title"],
+            "category": "shoppable TikTok video",
+            "url": f"https://www.tiktok.com/@{v.get('belonged_creator_handle') or 'user'}/video/{v['video_id']}",
+            "rank": rank,
+            "metrics": {k: v.get(k) for k in ("views", "revenue", "revenue_growth_rate", "ad_view_ratio",
+                                              "ad_revenue_ratio", "digg_count", "share_count",
+                                              "comment_count", "publish_date", "belonged_creator_handle")}
+                       | {f"rank:{list_name}": rank},
         })
     return items
 
@@ -157,7 +183,7 @@ SAVE_SQL = """
 def _save_all(conn, row, items: list[dict]) -> None:
     """Save one raw response's items. executemany sends them in one batch."""
     params = [{
-        "source": row["source"],
+        "source": item.get("source") or row["source"],
         "source_item_id": str(item["source_item_id"]),
         "title": item["title"][:1000],
         "category": item.get("category"),

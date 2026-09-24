@@ -7,6 +7,16 @@ The core signal is a **cross-platform gap**: demand is accelerating on Amazon, R
 
 Categories are fully open. Nothing is excluded up front except products TikTok Shop prohibits or restricts (the owner will supply that list).
 
+## TikTok-first design (current, 2026-09-24)
+TikTok is where the owner sells, so **TikTok data leads and every other source confirms**. This design replaces the earlier "rising elsewhere" weighting wherever the two conflict.
+- **Goal:** products rising on TikTok (or rising elsewhere and ready for TikTok) while TikTok Shop is still undersaturated; the ones most people miss because they don't combine all these angles.
+- **Discovery is TikTok-first** (Kalodata): small products ($1k–$50k/week) growing fastest, mid-size risers ($50k–$500k/week), new launches, and the most-viewed shoppable videos. Already-dominant top sellers are not a discovery source. Amazon Best Sellers and Reddit still feed items in, as confirmation and as a second route in for products rising elsewhere.
+- **TikTok-fit gate:** Claude judges every concept (sellable through short videos, impulse price, small, brand-agnostic, not a replenished staple, not regulated or prohibited). Concepts that aren't a fit are never looked up, scored or ranked. The owner can override the verdict in the dashboard.
+- **Lookups are prioritized, not exhaustive** (`collectors/keywords.py`). TikTok checks (Kalodata keyword search, TikTok hashtags) go to the watchlist, shortlisted concepts, this week's TikTok Shop listings, never-checked concepts, concepts rising elsewhere, top scores, then everything else in rotation. Google Trends only confirms the top TikTok candidates, at most every 4 weeks each.
+- **Score:** (TikTok momentum + small outside demand) × (1 + 0.15 per confirming source) × TikTok headroom × steadiness × margin. TikTok momentum = TikTok Shop revenue growth (weight 1.0) + shoppable-video views growth (0.5) + hashtag views growth (0.5). Google, Amazon and Reddit each add 0.25 on their own. Reddit's weight is a single setting and can be raised to TikTok's level later.
+- **Pipeline:** discovery → normalize → concepts → TikTok fit → TikTok checks → score → Google confirmation → final score.
+- **Weekly budget at the defaults:** about 21 Kalodata credits, about $2.50 Apify, and a few dollars of Claude.
+
 ## Owner context
 - Non-engineer founder. Keep the code simple, readable, and well-commented.
 - Prefer boring, reliable tools over clever ones.

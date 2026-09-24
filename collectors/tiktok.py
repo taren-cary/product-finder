@@ -40,7 +40,8 @@ class TikTokCollector(BaseCollector):
         self.cost_cap_usd = settings["cost_caps"]["apify_per_day_usd"]
 
     def collect(self) -> int:
-        keywords = watch_keywords(self.conn, self.cfg["max_keywords"])
+        keywords = watch_keywords(self.conn, self.cfg["max_keywords"], self.name,
+                                  lambda k: f"hashtag:{to_hashtag(k)}", purpose="tiktok")
         # Several keywords can share a hashtag; look each hashtag up once.
         hashtags = list(dict.fromkeys(to_hashtag(k) for k in keywords if to_hashtag(k)))
         if not hashtags:

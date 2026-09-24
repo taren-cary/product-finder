@@ -28,8 +28,9 @@ from dashboard import charts, data  # noqa: E402
 st.set_page_config(page_title="Product Gap Finder", layout="wide")
 
 STATUSES = ["new", "reviewed", "shortlisted", "rejected"]
-SOURCE_LABELS = {"google": "Google", "amazon": "Amazon", "reddit": "Reddit",
-                 "tiktok": "TikTok", "tiktokshop": "TikTok Shop"}
+SOURCE_LABELS = {"tiktokshop": "TikTok Shop revenue", "shopvideos": "Shoppable video views",
+                 "tiktok": "TikTok hashtag views", "google": "Google", "amazon": "Amazon", "reddit": "Reddit"}
+TIKTOK_KEYS = ("tiktokshop", "shopvideos", "tiktok")
 
 
 def open_concept(concept_id: int) -> None:
@@ -55,8 +56,8 @@ def opportunities() -> None:
     # --- Filters, in one row above the table ---
     f = st.columns([1.1, 1, 1.2, 1.2, 1.8, 1.6])
     week = f[0].selectbox("Week of", all_weeks, format_func=lambda d: d.strftime("%b %d, %Y"))
-    min_breadth = f[1].selectbox("Min. rising sources", [0, 1, 2, 3, 4, 5], index=0,
-                                 help="How many sources show demand up 10%+ this week.")
+    min_confirm = f[1].selectbox("Min. confirmations", [0, 1, 2, 3], index=0,
+                                 help="How many of Google, Amazon and Reddit also show demand up 10%+.")
     max_sat = f[2].slider("Max. TikTok saturation", 0.0, 1.0, 1.0, 0.05,
                           help="0 = nobody selling it on TikTok Shop, 1 = crowded.")
     age = f[3].selectbox("First spotted", ["Any time", "Last 7 days", "Last 30 days", "Last 90 days"])
@@ -64,14 +65,23 @@ def opportunities() -> None:
     search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
 
     df = data.ranking(week)
-    only_data = st.toggle("Only concepts with data this week", value=True,
-                          help="Concepts not looked up yet have no score. Every concept is looked up each Monday.")
+    g = st.columns([1.3, 1.3, 1.6, 3])
+    only_data = g[0].toggle("Only concepts with data", value=True,
+                            help="Concepts not looked up yet have no score.")
+    only_fit = g[1].toggle("Only TikTok-fit", value=True,
+                           help="Hide concepts judged not sellable on TikTok Shop.")
+    only_lists = g[2].toggle("On TikTok Shop lists this week", value=False,
+                             help="Only concepts that showed up in this week's rising / new / viral TikTok Shop lists.")
 
     view = df[df["review_status"].isin(statuses)]
+    if only_fit:
+        view = view[view["tiktok_fit"].fillna(False).astype(bool)]
     if only_data:
         view = view[view["has_data"].fillna(False)]
-    if min_breadth:
-        view = view[view["demand_breadth"].fillna(0) >= min_breadth]
+    if only_lists:
+        view = view[view["on_tiktok_lists"].fillna(False).astype(bool)]
+    if min_confirm:
+        view = view[view["confirmations"].fillna(0) >= min_confirm]
     if max_sat < 1.0:
         view = view[view["tiktok_saturation"].notna() & (view["tiktok_saturation"] <= max_sat)]
     if age != "Any time":
@@ -83,7 +93,8 @@ def opportunities() -> None:
 
     # --- Headline tiles ---
     t = st.columns(4)
-    t[0].metric("Concepts tracked", len(df))
+    t[0].metric("TikTok-fit concepts", int(df["tiktok_fit"].fillna(False).astype(bool).sum()),
+                help=f"Out of {len(df)} concepts in total.")
     t[1].metric("With data this week", int(df["has_data"].fillna(False).sum()))
     t[2].metric("Shortlisted", int((df["review_status"] == "shortlisted").sum()))
     top = df.dropna(subset=["opportunity_score"]).head(1)
@@ -104,10 +115,10 @@ def opportunities() -> None:
 
     st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
                "Scores firm up after 2–4 weeks of history.")
-    columns = ["rank", "name", "opportunity_score", "google_trend", "score_trend", "demand_breadth",
-               "outside_velocity", "velocity_tiktokshop", "tiktok_saturation", "sellers", "creators",
-               "lead_lag_gap", "paid_share", "spike_risk", "category", "review_status",
-               "first_spotted", "items"]
+    columns = ["rank", "name", "opportunity_score", "tiktok_momentum", "velocity_tiktokshop",
+               "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "confirmations",
+               "google_trend", "score_trend", "on_tiktok_lists", "lead_lag_gap", "paid_share", "spike_risk",
+               "category", "review_status", "first_spotted", "items"]
     event = st.dataframe(
         view[columns],
         hide_index=True,
@@ -120,12 +131,16 @@ def opportunities() -> None:
             "rank": st.column_config.NumberColumn("Rank", width="small"),
             "name": st.column_config.TextColumn("Concept", width="medium"),
             "opportunity_score": st.column_config.NumberColumn("Score", format="%.1f",
-                help="Rising demand x (1 / saturation) x steadiness. Higher is better."),
+                help="TikTok momentum (+ outside demand) x confirmations x TikTok headroom x steadiness."),
+            "tiktok_momentum": st.column_config.NumberColumn("TikTok momentum", format="percent",
+                help="Weekly growth on TikTok: shop revenue, shoppable-video views, hashtag views."),
+            "velocity_shopvideos": st.column_config.NumberColumn("Shop video views", format="percent"),
+            "confirmations": st.column_config.NumberColumn("Confirms", width="small",
+                help="How many of Google, Amazon and Reddit are also rising (0-3)."),
+            "on_tiktok_lists": st.column_config.CheckboxColumn("On TikTok lists", width="small",
+                help="Showed up in this week's rising / new / viral TikTok Shop lists."),
             "google_trend": st.column_config.LineChartColumn("Google, 6 mo", y_min=0, y_max=100),
             "score_trend": st.column_config.LineChartColumn("Score by week"),
-            "demand_breadth": st.column_config.NumberColumn("Rising sources", width="small"),
-            "outside_velocity": st.column_config.NumberColumn("Demand outside TikTok", format="percent",
-                help="Weighted growth on Google, Amazon and Reddit."),
             "velocity_tiktokshop": st.column_config.NumberColumn("TikTok Shop growth", format="percent"),
             "tiktok_saturation": st.column_config.ProgressColumn("TikTok saturation", min_value=0,
                 max_value=1, format="%.2f", help="0 = empty, 1 = crowded."),
@@ -184,6 +199,19 @@ def concept_details() -> None:
                f"first spotted {pd.to_datetime(c['created_at']).strftime('%b %d, %Y')} · status: **{c['review_status']}**")
     if c.get("description"):
         st.write(c["description"])
+    fit = c.get("tiktok_fit")
+    fit = None if fit is None or pd.isna(fit) else bool(fit)
+    fit_label = {True: "✅ TikTok fit", False: "🚫 Not for TikTok", None: "⏳ Not judged yet"}[fit]
+    fc = st.columns([3, 1.2])
+    fc[0].markdown(f"**{fit_label}** — {c.get('tiktok_fit_reason') or ''}"
+                   + (" *(set by hand)*" if c.get("tiktok_fit_by") == "manual" else ""))
+    if fit is True:
+        if fc[1].button("Mark not for TikTok"):
+            data.set_fit([concept_id], False)
+            st.rerun()
+    elif fc[1].button("Mark as TikTok fit"):
+        data.set_fit([concept_id], True)
+        st.rerun()
 
     # Status buttons
     b = st.columns(5)
@@ -202,8 +230,10 @@ def concept_details() -> None:
     m[0].metric("Score" + (f" (rank {int(latest['rank'])})" if latest.get("rank") else ""),
                 f"{score:.1f}" if score is not None and not pd.isna(score) else "–",
                 delta=None if prev_score is None or score is None else f"{score - prev_score:+.1f} vs last week")
-    m[1].metric("Rising sources", int(latest["demand_breadth"]) if latest.get("demand_breadth") is not None else "–")
-    m[2].metric("Demand outside TikTok", pct(latest.get("outside_velocity")))
+    m[1].metric("TikTok momentum", pct(latest.get("tiktok_momentum")))
+    confirms = latest.get("confirmations")
+    m[2].metric("Confirmations", "–" if confirms is None or pd.isna(confirms) else f"{int(confirms)} of 3",
+                help="Google, Amazon and Reddit also rising")
     sat = latest.get("tiktok_saturation")
     m[3].metric("TikTok saturation", f"{sat:.2f}" if sat is not None and not pd.isna(sat) else "–",
                 help="0 = empty, 1 = crowded")
@@ -216,19 +246,25 @@ def concept_details() -> None:
     with st.expander("Why this score"):
         details = latest.get("details") or {}
         breakdown = details.get("score_breakdown") or {}
-        rows = [{"Source": SOURCE_LABELS[s], "Growth this week": pct(latest.get(f"velocity_{s}")),
-                 "Counts toward score": "yes" if s in (breakdown.get("rising_sources") or {}) else "no"}
+        rising = {**(breakdown.get("tiktok_rising") or {}), **(breakdown.get("outside_rising") or {})}
+        rows = [{"Source": SOURCE_LABELS[s], "Role": "TikTok (core)" if s in TIKTOK_KEYS else "Confirmation",
+                 "Weekly growth": pct(latest.get(f"velocity_{s}")),
+                 "Counts toward score": "yes" if s in rising else "no"}
                 for s in SOURCE_LABELS]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         shop = details.get("shop") or {}
         st.markdown(
-            f"- Demand (weighted, with the multi-source bonus): **{breakdown.get('demand', '–')}**\n"
+            f"- TikTok demand: **{breakdown.get('tiktok_demand', '–')}**, outside demand: "
+            f"**{breakdown.get('outside_demand', '–')}**, confirmation bonus "
+            f"x**{breakdown.get('confirmation_multiplier', '–')}**\n"
             f"- Saturation used: **{breakdown.get('saturation_used', '–')}**, so the score is multiplied by "
-            f"**{breakdown.get('saturation_factor', '–')}**\n"
-            f"- Steadiness used: **{breakdown.get('sustained_used', '–')}** (0.5 = brief rise, 1.0 = steady climb)\n"
-            f"- TikTok Shop, last 7 days: {shop.get('sellers', '–')} sellers, "
-            f"${shop.get('revenue', 0):,.0f} revenue, top 3 sellers take "
-            f"{(shop.get('top3_share') or 0) * 100:.0f}%"
+            f"**{breakdown.get('headroom_factor', '–')}** (TikTok headroom)\n"
+            f"- Steadiness used: **{breakdown.get('sustained_used', '–')}** (0.5 = brief rise, 1.0 = steady "
+            f"climb; based on {details.get('sustained_basis') or 'no history yet'})\n"
+            f"- TikTok Shop (checked {shop.get('checked') or 'not yet'}): {shop.get('sellers', '–')} sellers, "
+            f"${shop.get('revenue') or 0:,.0f} revenue last 7 days, top 3 sellers take "
+            f"{(shop.get('top3_share') or 0) * 100:.0f}%; growth from {shop.get('growth_basis') or '–'}\n"
+            f"- Listings on this week's TikTok Shop lists: {details.get('tiktok_listings_this_week', 0)}"
         )
 
     # Every source's history, side by side (one measure per chart)

@@ -9,8 +9,9 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import settings
-from features.run import (amazon_velocity, google_metrics, growth, mention_velocity,
-                          saturation, shop_stats, video_stats, weighted_velocity)
+from features.run import (amazon_velocity, google_metrics, growth, latest_growth, mention_velocity,
+                          saturation, shop_stats, sustained_from_series, video_stats,
+                          weekly_growth, weighted_velocity)
 from scoring.run import opportunity
 
 F, S = settings["features"], settings["scoring"]
@@ -58,23 +59,45 @@ empty = saturation({"sellers": 0, "creators": 0, "revenue": 0, "top3_share": Non
 crowded = saturation({"sellers": 100, "creators": 100, "revenue": 1e6, "top3_share": 1.0, "hashtag_views": 1e10}, F)
 assert empty == 0.0 and crowded == 1.0, (empty, crowded)
 assert saturation({}, F) is None
-assert weighted_velocity({"google": 0.5, "amazon": None, "reddit": 5.0}, F["outside_weights"], 2.0) == (0.5 + 0.5 * 2.0) / 1.5
+assert weighted_velocity({"google": 0.5, "amazon": None, "reddit": 5.0},
+                         {"google": 1.0, "amazon": 1.0, "reddit": 0.5}, 2.0) == (0.5 + 0.5 * 2.0) / 1.5
 
-# Scores: rising on 3 sources + empty TikTok Shop should beat
-# the same demand on a crowded TikTok Shop, and a spike should be penalized.
-base = {"velocity_google": 0.4, "velocity_amazon": 0.3, "velocity_reddit": 0.5,
-        "velocity_tiktok": None, "velocity_tiktokshop": None,
-        "sustained_factor": 1.0, "spike_risk": False, "margin_factor": 1.0}
-gap_score, b = opportunity({**base, "tiktok_saturation": 0.0}, S)
-crowded_score, _ = opportunity({**base, "tiktok_saturation": 1.0}, S)
-spike_score, _ = opportunity({**base, "tiktok_saturation": 0.0, "spike_risk": True}, S)
-one_source, _ = opportunity({**base, "velocity_amazon": None, "velocity_reddit": None, "tiktok_saturation": 0.0}, S)
-expected = 100 * (0.4 + 0.3 + 0.5 * 0.5) * (1 + 0.25 * 2)
-assert abs(gap_score - expected) < 0.01, (gap_score, expected)
-assert abs(crowded_score - expected / 5) < 0.01
-assert abs(spike_score - expected / 2) < 0.01
-assert one_source < gap_score / 2
-falling, _ = opportunity({**base, "velocity_google": -0.5, "velocity_amazon": -0.2, "velocity_reddit": None, "tiktok_saturation": 0.0}, S)
+# Growth between checks, converted to a weekly rate
+from datetime import date
+assert abs(weekly_growth(121, date(2026, 10, 12), 100, date(2026, 9, 28)) - 0.10) < 1e-9   # +21% over 2 weeks
+assert weekly_growth(120, date(2026, 10, 1), 100, date(2026, 9, 28)) is None               # checks too close together
+assert abs(latest_growth([(date(2026, 9, 14), 100), (date(2026, 9, 21), 90), (date(2026, 9, 28), 110)]) - (110 / 90 - 1)) < 1e-9
+assert latest_growth([(date(2026, 9, 28), 100)]) is None
+assert sustained_from_series([10, 12, 15, 20]) == 1.0 and sustained_from_series([10, 9, 8]) == 0.5
+assert sustained_from_series([10, 12]) is None
+
+# TikTok-first scores
+def row(**kw):
+    base = {f"velocity_{s}": None for s in ("tiktokshop", "shopvideos", "tiktok", "google", "amazon", "reddit")}
+    base.update({"sustained_factor": 1.0, "spike_risk": False, "margin_factor": 1.0, "tiktok_saturation": 0.0})
+    base.update(kw)
+    return base
+
+tiktok_only, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2), S)
+assert abs(tiktok_only - 100 * (0.4 * 1.0 + 0.2 * 0.5)) < 0.01, tiktok_only
+
+# Confirmations add a little on their own and multiply the score
+confirmed, b = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2,
+                               velocity_google=0.3, velocity_amazon=0.2), S)
+expected = 100 * (0.4 + 0.1 + 0.25 * 0.3 + 0.25 * 0.2) * (1 + 0.15 * 2)
+assert abs(confirmed - expected) < 0.01 and b["confirmations"] == 2, (confirmed, expected)
+
+# The same outside demand without TikTok momentum scores far lower (arbitrage candidate)
+outside_only, _ = opportunity(row(velocity_google=0.3, velocity_amazon=0.2), S)
+assert 0 < outside_only < tiktok_only / 2, (outside_only, tiktok_only)
+
+# Headroom: a crowded TikTok Shop cuts the score to 1/5; a spike halves it
+crowded, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, tiktok_saturation=1.0), S)
+spiky, _ = opportunity(row(velocity_tiktokshop=0.4, velocity_shopvideos=0.2, spike_risk=True), S)
+assert abs(crowded - tiktok_only / 5) < 0.01 and abs(spiky - tiktok_only / 2) < 0.01
+
+falling, _ = opportunity(row(velocity_tiktokshop=-0.3, velocity_google=-0.2), S)
 assert falling == 0
 print("all metric checks passed")
-print(f"example scores: gap={gap_score}  crowded={crowded_score}  spike={spike_score}  one-source={one_source}")
+print(f"example scores: TikTok only={tiktok_only}  TikTok+2 confirmations={confirmed}  "
+      f"outside only={outside_only}  crowded={crowded}  spike={spiky}")

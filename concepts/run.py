@@ -45,6 +45,7 @@ For each item:
 1. is_product: true if the item is, or clearly centers on, one physical product type.
    false for: discussions or questions that don't center on a specific product type, services, digital goods, media (books, music, movies, video games), gift cards, vehicles, real estate, and any excluded type listed below.
    A Reddit post counts as the product it is about; if it's about no product, false.
+   A "kalodata_video" item is the title of a TikTok video that sells a product; it counts as the product being sold. If the title doesn't reveal the product, false.
    A search term counts only if it names a product type someone would buy.
 2. If is_product is true:
    - If one of the existing concepts is the same product type, set existing_concept_id to its id and leave the new_concept_* fields empty.

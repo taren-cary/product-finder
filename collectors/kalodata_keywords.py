@@ -28,7 +28,8 @@ class KalodataKeywordsCollector(KalodataCollector):
 
     def collect(self) -> int:
         kcfg = settings["kalodata_keywords"]
-        keywords = watch_keywords(self.conn, kcfg["max_keywords"])
+        keywords = watch_keywords(self.conn, kcfg["max_keywords"], self.name,
+                                  lambda k: f"products:{k}", purpose="tiktok")
         if not keywords:
             self.log.info("No keywords to look up yet (watchlist and concepts are empty)")
             return 0

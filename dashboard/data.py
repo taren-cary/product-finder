@@ -40,7 +40,9 @@ def ranking(week: date) -> pd.DataFrame:
     return _df(
         """
         select c.id, c.name, c.category, c.keywords, c.review_status, c.created_at::date as first_spotted,
+               c.tiktok_fit, c.tiktok_fit_reason,
                w.rank, w.opportunity_score, w.demand_breadth, w.outside_velocity,
+               w.tiktok_momentum, w.velocity_shopvideos, w.confirmations, w.on_tiktok_lists,
                w.velocity_google, w.velocity_amazon, w.velocity_reddit, w.velocity_tiktok,
                w.velocity_tiktokshop, w.tiktok_saturation, w.sellers, w.creators,
                w.shop_revenue_7d, w.lead_lag_gap, w.paid_share, w.spike_risk, w.sustained_factor,
@@ -234,6 +236,19 @@ def set_status(concept_ids: list[int], status: str) -> None:
     _write(lambda conn: conn.execute(
         "update gapfinder.concepts set review_status = %s, updated_at = now() where id = any(%s)",
         (status, concept_ids),
+    ))
+
+
+def set_fit(concept_ids: list[int], fit: bool) -> None:
+    """Override Claude's TikTok-fit verdict by hand (never overwritten afterwards)."""
+    reason = "Marked a TikTok fit by hand" if fit else "Marked not for TikTok by hand"
+    _write(lambda conn: conn.execute(
+        """
+        update gapfinder.concepts
+        set tiktok_fit = %s, tiktok_fit_by = 'manual', tiktok_fit_reason = %s, updated_at = now()
+        where id = any(%s)
+        """,
+        (fit, reason, concept_ids),
     ))
 
 

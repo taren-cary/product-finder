@@ -1,34 +1,41 @@
-"""Features step: compute each concept's metrics for the current week.
+"""Features step: compute each TikTok-fit concept's metrics for the current week.
 
-For every active concept, this gathers what we know from each source and
+For every active concept judged a TikTok fit, this gathers what we know and
 writes one row to gapfinder.concept_weekly (week_start = this week's Monday).
-It reruns safely during the week; each run overwrites the week's row with
-the latest numbers.
+It reruns safely; each run overwrites the week's row with the latest numbers.
 
-Where each metric comes from (keyword = the concept's main search term):
+TikTok comes first (keyword = the concept's main search term):
 
-  velocity_google      Google Trends interest: last 4 weeks vs the 4 before.
-  velocity_amazon      Amazon Best Sellers: average rank gain of the concept's
-                       products vs last week; a product new to the list counts
-                       as a gain of +0.5. Needs two weeks of Amazon data.
-  velocity_reddit      Buy-intent Reddit posts: last 28 days vs the 28 before.
-  velocity_tiktok      TikTok hashtag total views, week over week.
-  velocity_tiktokshop  Revenue of the top TikTok Shop products for the keyword
-                       (Kalodata), week over week. Until there are two weeks of
-                       data, Kalodata's own 7-day growth figure is used instead.
+  velocity_tiktokshop  TikTok Shop revenue for the keyword (Kalodata keyword
+                       search), weekly growth between the last two checks.
+                       Until there are two checks: Kalodata's own 7-day growth
+                       from the latest check, or from this week's TikTok Shop
+                       discovery lists if the concept appeared in them.
+  velocity_shopvideos  Views of shoppable TikTok videos for the keyword, weekly growth.
+  velocity_tiktok      TikTok hashtag total views, weekly growth.
+  tiktok_momentum      Weighted blend of those three (weights in config.yaml).
+  tiktok_saturation    0 (nobody selling) to 1 (crowded): sellers, creators,
+                       TikTok Shop revenue, top-3 seller share, hashtag views.
 
-  tiktok_saturation    0 (nobody selling) to 1 (crowded), a weighted blend of:
-                       sellers, creators, TikTok Shop revenue, top-3 seller
-                       share, and hashtag views. Weights in config.yaml.
-  lead_lag_gap         outside demand growth (Google, Amazon, Reddit) minus
-                       TikTok Shop supply growth (sellers + creators, week over
-                       week). Positive = demand is rising faster than TikTok
-                       Shop is filling up. THE key metric.
-  spike_risk /         From the 12-month Google Trends series: is the recent rise
-  sustained_factor     a steady climb over several weeks, or one sudden spike?
+Confirmation from outside TikTok:
+
+  velocity_google      Google Trends interest, last 4 weeks vs the 4 before
+                       (from the latest check within the last 8 weeks).
+  velocity_amazon      Amazon Best Sellers rank gains / new entries vs last week.
+  velocity_reddit      Buy-intent Reddit posts, last 28 days vs the 28 before.
+  confirmations        How many of those three are rising.
+
+  lead_lag_gap         Combined demand growth minus TikTok Shop supply growth
+                       (sellers + creators). Positive = demand rising faster
+                       than TikTok Shop is filling up.
+  sustained_factor     0.5 (brief rise) to 1.0 (steady climb): from TikTok Shop
+                       revenue history once there are 3+ checks, else Google.
+  spike_risk           The Google curve shows a one-off spike.
   paid_share           Share of shoppable-video views that come from ads.
 
-All thresholds and weights live in config.yaml under "features".
+Checks happen on a rotation (collectors/keywords.py), so growth between two
+checks a few weeks apart is converted to a per-week rate. All thresholds and
+weights are in config.yaml under "features".
 """
 
 import logging
@@ -44,8 +51,9 @@ from core.config import settings
 
 log = logging.getLogger(__name__)
 
+TIKTOK_SOURCES = ("tiktokshop", "shopvideos", "tiktok")
 OUTSIDE_SOURCES = ("google", "amazon", "reddit")
-ALL_SOURCES = ("google", "amazon", "reddit", "tiktok", "tiktokshop")
+ALL_SOURCES = TIKTOK_SOURCES + OUTSIDE_SOURCES
 
 
 def week_start(d: date) -> date:
@@ -182,20 +190,109 @@ def weighted_velocity(velocities: dict, weights: dict, cap: float) -> float | No
     return sum(weights[s] * v for s, v in usable.items()) / total_weight
 
 
+def weekly_growth(cur_value, cur_date, prev_value, prev_date) -> float | None:
+    """Growth between two checks, converted to a per-week rate.
+    E.g. +21% over two weeks is about +10% per week."""
+    if cur_value is None or prev_value is None or prev_value <= 0 or cur_value < 0:
+        return None
+    days = (cur_date - prev_date).days
+    if days < 6:
+        return None
+    return (cur_value / prev_value) ** (7 / days) - 1
+
+
+def sustained_from_series(values: list[float]) -> float | None:
+    """0.5 to 1.0 from how many of the recent check-to-check changes were
+    increases. Needs at least 3 checks."""
+    if len(values) < 3:
+        return None
+    recent = values[-5:]
+    ups = sum(1 for a, b in zip(recent, recent[1:]) if b > a)
+    return 0.5 + 0.5 * ups / (len(recent) - 1)
+
+
+def latest_growth(series: list[tuple]) -> float | None:
+    """Per-week growth from the previous check (at least 6 days earlier) to the latest.
+    series: [(date, value)] oldest first."""
+    if len(series) < 2:
+        return None
+    cur_date, cur_value = series[-1]
+    earlier = [(d, v) for d, v in series[:-1] if (cur_date - d).days >= 6]
+    if not earlier:
+        return None
+    prev_date, prev_value = earlier[-1]
+    return weekly_growth(cur_value, cur_date, prev_value, prev_date)
+
+
 # --- Loading data -----------------------------------------------------------
 
 def _latest_raw(conn, sources, start: date, end: date) -> dict:
-    """Most recent payload per (source, request_key) between start and end."""
+    """Most recent row per (source, request_key) between start and end."""
     rows = conn.execute(
         """
-        select distinct on (source, request_key) source, request_key, payload
+        select distinct on (source, request_key) source, request_key, snapshot_date, payload
         from gapfinder.raw_responses
         where source = any(%s) and snapshot_date between %s and %s
         order by source, request_key, snapshot_date desc
         """,
         (list(sources), start, end),
     ).fetchall()
-    return {(r["source"], r["request_key"]): r["payload"] for r in rows}
+    return {(r["source"], r["request_key"]): r for r in rows}
+
+
+def _history(conn, since: date) -> dict:
+    """(source, request_key) -> checks oldest first, each with: TikTok Shop
+    revenue and seller count, shoppable-video views and creator count, or
+    hashtag total views."""
+    rows = conn.execute(
+        """
+        select r.source, r.request_key, r.snapshot_date,
+               (r.payload->>'total_views')::numeric as hashtag_views,
+               a.revenue, a.sellers, a.views, a.creators
+        from gapfinder.raw_responses r
+        left join lateral (
+            select sum(coalesce((d->>'revenue')::numeric, 0)) as revenue,
+                   count(distinct d->>'seller_id') as sellers,
+                   sum(coalesce((d->>'views')::numeric, 0)) as views,
+                   count(distinct d->>'belonged_creator_id') as creators
+            from jsonb_array_elements(case when r.source = 'kalodata_keywords'
+                                           then r.payload->'data' else '[]'::jsonb end) d
+        ) a on true
+        where r.source in ('kalodata_keywords', 'tiktok') and r.snapshot_date >= %s
+        order by r.snapshot_date
+        """,
+        (since,),
+    ).fetchall()
+    out = defaultdict(list)
+    for r in rows:
+        out[(r["source"], r["request_key"])].append(r)
+    return out
+
+
+def _series(history, source, key, field) -> list[tuple]:
+    return [(r["snapshot_date"], float(r[field])) for r in history.get((source, key), [])
+            if r[field] is not None]
+
+
+def _tiktok_lists(conn, week_start_: date) -> dict:
+    """concept_id -> (revenue-weighted Kalodata growth, number of listings) for
+    concepts that appeared in this week's TikTok Shop discovery lists."""
+    rows = conn.execute(
+        """
+        select m.concept_id, count(*) as listed,
+               sum(least((s.metrics->>'revenue_growth_rate')::numeric, 500)
+                   * (s.metrics->>'revenue')::numeric)
+                 / nullif(sum((s.metrics->>'revenue')::numeric)
+                          filter (where s.metrics ? 'revenue_growth_rate'), 0) / 100 as growth
+        from gapfinder.item_concept_map m
+        join gapfinder.items i on i.id = m.item_id and i.source in ('kalodata', 'kalodata_video')
+        join gapfinder.item_snapshots s on s.item_id = i.id and s.snapshot_date >= %s
+        group by m.concept_id
+        """,
+        (week_start_,),
+    ).fetchall()
+    return {r["concept_id"]: (float(r["growth"]) if r["growth"] is not None else None, r["listed"])
+            for r in rows}
 
 
 def _amazon_ranks(conn, cur_start, cur_end, prev_start, prev_end) -> dict:
@@ -252,12 +349,15 @@ def run(conn, snapshot_date: date) -> dict:
     concepts = conn.execute(
         """
         select id, name, keywords from gapfinder.concepts
-        where merged_into_id is null and review_status <> 'rejected'
+        where merged_into_id is null and review_status <> 'rejected' and tiktok_fit is true
         """
     ).fetchall()
-    enrichment = ("google_trends", "tiktok", "kalodata_keywords")
-    cur = _latest_raw(conn, enrichment, cur_start, cur_end)
-    prev = _latest_raw(conn, enrichment, prev_start, prev_end)
+    tiktok_latest = _latest_raw(conn, ("tiktok", "kalodata_keywords"),
+                                snapshot_date - timedelta(weeks=cfg["tiktok_max_age_weeks"]), cur_end)
+    google_latest = _latest_raw(conn, ("google_trends",),
+                                snapshot_date - timedelta(weeks=cfg["google_max_age_weeks"]), cur_end)
+    history = _history(conn, snapshot_date - timedelta(weeks=12))
+    lists = _tiktok_lists(conn, cur_start)
     amazon = _amazon_ranks(conn, cur_start, cur_end, prev_start, prev_end)
     reddit = _reddit_mentions(conn, snapshot_date)
 
@@ -265,106 +365,115 @@ def run(conn, snapshot_date: date) -> dict:
     for c in concepts:
         kw = concept_keyword(c)
         tag = to_hashtag(kw)
+        pkey, vkey, hkey = f"products:{kw}", f"videos:{kw}", f"hashtag:{tag}"
         details = {"keyword": kw, "hashtag": tag}
 
-        # Google Trends
-        g = google_metrics(cur.get(("google_trends", f"trends:{kw}")) or {}, cfg)
-        details["google"] = g
+        # --- TikTok: the core signal ---
+        prod = tiktok_latest.get(("kalodata_keywords", pkey))
+        vids = tiktok_latest.get(("kalodata_keywords", vkey))
+        tag_row = tiktok_latest.get(("tiktok", hkey))
+        shop = shop_stats((prod["payload"].get("data") or []) if prod else [])
+        vstats = video_stats((vids["payload"].get("data") or []) if vids else [])
+        hashtag_views = (tag_row["payload"] or {}).get("total_views") if tag_row else None
+        has_shop = shop["products"] > 0
+        list_growth, listed = lists.get(c["id"], (None, 0))
 
-        # Amazon and Reddit (from the concept's own items)
+        v_shop, basis = latest_growth(_series(history, "kalodata_keywords", pkey, "revenue")), "our history"
+        if v_shop is None and has_shop:
+            v_shop, basis = shop["kalodata_growth"], "Kalodata 7-day growth"
+        if v_shop is None and list_growth is not None:
+            v_shop, basis = list_growth, "this week's TikTok Shop lists"
+        v_videos = latest_growth(_series(history, "kalodata_keywords", vkey, "views"))
+        v_tiktok = latest_growth(_series(history, "tiktok", hkey, "hashtag_views"))
+        tiktok_v = {"tiktokshop": v_shop, "shopvideos": v_videos, "tiktok": v_tiktok}
+        momentum = weighted_velocity(tiktok_v, cfg["tiktok_weights"], cfg["velocity_cap"])
+
+        details["shop"] = shop | {"growth_basis": basis if v_shop is not None else None,
+                                  "checked": str(prod["snapshot_date"]) if prod else None}
+        details["videos"] = vstats
+        details["tiktok_listings_this_week"] = listed
+
+        # --- Confirmation from outside TikTok ---
+        g_row = google_latest.get(("google_trends", f"trends:{kw}"))
+        g = google_metrics((g_row["payload"] if g_row else {}) or {}, cfg)
+        g["checked"] = str(g_row["snapshot_date"]) if g_row else None
+        details["google"] = g
         v_amazon = amazon_velocity(amazon.get(c["id"], []), cfg["amazon_new_entry_value"])
         cur_mentions, prev_mentions = reddit.get(c["id"], (0, 0))
         v_reddit = mention_velocity(cur_mentions, prev_mentions, cfg["reddit_min_mentions"])
         details["reddit"] = {"mentions_28d": cur_mentions, "mentions_prev_28d": prev_mentions}
+        outside_v = {"google": g["velocity"], "amazon": v_amazon, "reddit": v_reddit}
+        outside = weighted_velocity(outside_v, cfg["outside_weights"], cfg["velocity_cap"])
+        confirmations = sum(1 for v in outside_v.values()
+                            if v is not None and v >= cfg["rising_threshold"])
 
-        # TikTok hashtag
-        tt_cur = cur.get(("tiktok", f"hashtag:{tag}")) or {}
-        tt_prev = prev.get(("tiktok", f"hashtag:{tag}")) or {}
-        hashtag_views = tt_cur.get("total_views")
-        v_tiktok = growth(hashtag_views, tt_prev.get("total_views"))
-
-        # TikTok Shop (Kalodata keyword search)
-        shop_cur = shop_stats((cur.get(("kalodata_keywords", f"products:{kw}")) or {}).get("data") or [])
-        shop_prev = shop_stats((prev.get(("kalodata_keywords", f"products:{kw}")) or {}).get("data") or [])
-        vid_cur = video_stats((cur.get(("kalodata_keywords", f"videos:{kw}")) or {}).get("data") or [])
-        vid_prev = video_stats((prev.get(("kalodata_keywords", f"videos:{kw}")) or {}).get("data") or [])
-        has_shop = shop_cur["products"] > 0
-        v_shop = growth(shop_cur["revenue"], shop_prev["revenue"]) if shop_prev["products"] else None
-        if v_shop is None and has_shop:
-            v_shop = shop_cur["kalodata_growth"]   # Kalodata's own 7-day growth until we have history
-        details["shop"] = shop_cur
-        details["videos"] = vid_cur
-
-        velocities = {"google": g["velocity"], "amazon": v_amazon, "reddit": v_reddit,
-                      "tiktok": v_tiktok, "tiktokshop": v_shop}
-        breadth = sum(1 for v in velocities.values() if v is not None and v >= cfg["rising_threshold"])
-        outside = weighted_velocity({s: velocities[s] for s in OUTSIDE_SOURCES},
-                                    cfg["outside_weights"], cfg["velocity_cap"])
+        all_v = {**tiktok_v, **outside_v}
+        breadth = sum(1 for v in all_v.values() if v is not None and v >= cfg["rising_threshold"])
 
         sat = saturation({
-            "sellers": shop_cur["sellers"] if has_shop else None,
-            "creators": vid_cur["creators"] if vid_cur["videos"] else None,
-            "revenue": shop_cur["revenue"] if has_shop else None,
-            "top3_share": shop_cur["top3_share"],
+            "sellers": shop["sellers"] if has_shop else None,
+            "creators": vstats["creators"] if vstats["videos"] else None,
+            "revenue": shop["revenue"] if has_shop else None,
+            "top3_share": shop["top3_share"],
             "hashtag_views": hashtag_views,
         }, cfg)
 
-        # Supply growth on TikTok Shop: sellers + creators, week over week.
-        supply_now = (shop_cur["sellers"] + vid_cur["creators"]) if has_shop else None
-        supply_before = (shop_prev["sellers"] + vid_prev["creators"]) if shop_prev["products"] else None
-        supply_growth = growth(supply_now, supply_before)
+        # Supply growth on TikTok Shop: sellers + creators, per week.
+        creators_by_date = dict(_series(history, "kalodata_keywords", vkey, "creators"))
+        supply = [(d, v + creators_by_date.get(d, 0))
+                  for d, v in _series(history, "kalodata_keywords", pkey, "sellers")]
+        supply_growth = latest_growth(supply)
         details["supply_growth"] = supply_growth
-        gap = None if outside is None else outside - max(0.0, supply_growth or 0.0)
+        demand = weighted_velocity(all_v, cfg["demand_weights"], cfg["velocity_cap"])
+        gap = None if demand is None else demand - max(0.0, supply_growth or 0.0)
 
-        sustained = None
-        if g["sustained_weeks"] is not None:
+        sustained = sustained_from_series(
+            [v for _, v in _series(history, "kalodata_keywords", pkey, "revenue")])
+        details["sustained_basis"] = "TikTok Shop revenue" if sustained is not None else None
+        if sustained is None and g["sustained_weeks"] is not None:
             sustained = 0.5 + 0.5 * g["sustained_weeks"] / 8
+            details["sustained_basis"] = "Google Trends"
 
         rows.append({
             "concept_id": c["id"], "week_start": cur_start,
-            "velocity_google": g["velocity"], "velocity_amazon": v_amazon,
-            "velocity_reddit": v_reddit, "velocity_tiktok": v_tiktok, "velocity_tiktokshop": v_shop,
-            "demand_breadth": breadth, "outside_velocity": outside,
+            "velocity_tiktokshop": v_shop, "velocity_shopvideos": v_videos, "velocity_tiktok": v_tiktok,
+            "tiktok_momentum": momentum, "on_tiktok_lists": listed > 0,
+            "velocity_google": g["velocity"], "velocity_amazon": v_amazon, "velocity_reddit": v_reddit,
+            "confirmations": confirmations, "outside_velocity": outside, "demand_breadth": breadth,
             "tiktok_saturation": sat,
-            "sellers": shop_cur["sellers"] if has_shop else None,
-            "creators": vid_cur["creators"] if vid_cur["videos"] else None,
-            "shop_revenue_7d": shop_cur["revenue"] if has_shop else None,
-            "top3_seller_share": shop_cur["top3_share"],
+            "sellers": shop["sellers"] if has_shop else None,
+            "creators": vstats["creators"] if vstats["videos"] else None,
+            "shop_revenue_7d": shop["revenue"] if has_shop else None,
+            "top3_seller_share": shop["top3_share"],
             "hashtag_views": hashtag_views,
-            "lead_lag_gap": gap, "paid_share": vid_cur["paid_share"],
+            "lead_lag_gap": gap, "paid_share": vstats["paid_share"],
             "spike_risk": g["spike_risk"], "sustained_factor": sustained,
             "details": Jsonb(_round_floats(details)),
         })
 
-    with conn.cursor() as cur_:
-        cur_.executemany(
-            """
-            insert into gapfinder.concept_weekly (
-                concept_id, week_start, velocity_google, velocity_amazon, velocity_reddit,
-                velocity_tiktok, velocity_tiktokshop, demand_breadth, outside_velocity,
-                tiktok_saturation, sellers, creators, shop_revenue_7d, top3_seller_share,
-                hashtag_views, lead_lag_gap, paid_share, spike_risk, sustained_factor, details)
-            values (
-                %(concept_id)s, %(week_start)s, %(velocity_google)s, %(velocity_amazon)s, %(velocity_reddit)s,
-                %(velocity_tiktok)s, %(velocity_tiktokshop)s, %(demand_breadth)s, %(outside_velocity)s,
-                %(tiktok_saturation)s, %(sellers)s, %(creators)s, %(shop_revenue_7d)s, %(top3_seller_share)s,
-                %(hashtag_views)s, %(lead_lag_gap)s, %(paid_share)s, %(spike_risk)s, %(sustained_factor)s,
-                %(details)s)
-            on conflict (concept_id, week_start) do update set
-                velocity_google = excluded.velocity_google, velocity_amazon = excluded.velocity_amazon,
-                velocity_reddit = excluded.velocity_reddit, velocity_tiktok = excluded.velocity_tiktok,
-                velocity_tiktokshop = excluded.velocity_tiktokshop, demand_breadth = excluded.demand_breadth,
-                outside_velocity = excluded.outside_velocity, tiktok_saturation = excluded.tiktok_saturation,
-                sellers = excluded.sellers, creators = excluded.creators,
-                shop_revenue_7d = excluded.shop_revenue_7d, top3_seller_share = excluded.top3_seller_share,
-                hashtag_views = excluded.hashtag_views, lead_lag_gap = excluded.lead_lag_gap,
-                paid_share = excluded.paid_share, spike_risk = excluded.spike_risk,
-                sustained_factor = excluded.sustained_factor, details = excluded.details,
-                computed_at = now()
-            """,
-            rows,
-        )
-    log.info("Computed metrics for %d concepts (week of %s)", len(rows), cur_start)
+    # Concepts that are no longer a TikTok fit (or were rejected/merged) keep
+    # their older weeks but get no row for this week.
+    conn.execute(
+        """
+        delete from gapfinder.concept_weekly w using gapfinder.concepts c
+        where w.concept_id = c.id and w.week_start = %s
+          and (c.tiktok_fit is not true or c.review_status = 'rejected' or c.merged_into_id is not null)
+        """,
+        (cur_start,),
+    )
+    if rows:
+        cols = list(rows[0].keys())
+        updates = ", ".join(f"{k} = excluded.{k}" for k in cols if k not in ("concept_id", "week_start"))
+        with conn.cursor() as cur:
+            cur.executemany(
+                f"""
+                insert into gapfinder.concept_weekly ({", ".join(cols)})
+                values ({", ".join(f"%({k})s" for k in cols)})
+                on conflict (concept_id, week_start) do update set {updates}, computed_at = now()
+                """,
+                rows,
+            )
+    log.info("Computed metrics for %d TikTok-fit concepts (week of %s)", len(rows), cur_start)
     return {"records": len(rows)}
 
 

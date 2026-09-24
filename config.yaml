@@ -50,14 +50,27 @@ excluded_product_types: []
 features:
   rising_threshold: 0.10       # a source counts as "rising" at +10% or more
   velocity_cap: 2.0            # growth above +200% counts as +200% (stops one wild number dominating)
+  tiktok_max_age_weeks: 4      # use a concept's TikTok checks from up to 4 weeks ago
+  google_max_age_weeks: 8      # use a concept's Google check from up to 8 weeks ago
   google_min_interest: 5       # ignore Google growth when interest is below this (0-100 scale; tiny numbers are noise)
   spike_ratio: 2.0             # a recent week at 2x the typical level, without a steady climb, is a spike
   amazon_new_entry_value: 0.5  # a product new to the Best Sellers list counts as a +50% rank gain
   reddit_min_mentions: 2       # fewer buy-intent posts than this in 28 days = no Reddit signal
-  outside_weights:             # how much each outside-TikTok source counts toward outside demand
+  tiktok_weights:              # blend for the "TikTok momentum" number
+    tiktokshop: 1.0            # TikTok Shop revenue for the keyword
+    shopvideos: 0.5            # views of shoppable videos for the keyword
+    tiktok: 0.5                # hashtag total views
+  outside_weights:             # blend for the "demand outside TikTok" number
     google: 1.0
     amazon: 1.0
-    reddit: 0.5
+    reddit: 1.0
+  demand_weights:              # blend for the lead-lag gap (TikTok counts most)
+    tiktokshop: 1.0
+    shopvideos: 0.5
+    tiktok: 0.5
+    google: 0.25
+    amazon: 0.25
+    reddit: 0.25
   saturation_reference:        # the level at which each signal counts as "fully crowded"
     sellers: 100               # distinct sellers among the top 100 TikTok Shop products
     creators: 100              # distinct creators among the top 100 shoppable videos
@@ -71,19 +84,23 @@ features:
     hashtag_views: 0.15
 
 # --- Opportunity score (scoring step) ---
-# opportunity = demand x 1/(1 + saturation_strength x saturation) x sustained x margin x 100
+# TikTok leads, everything else confirms:
+# opportunity = (TikTok demand + outside demand) x confirmation bonus
+#               x TikTok headroom x steadiness x margin x 100
 scoring:
-  source_weights:              # how much rising demand on each source counts
-    google: 1.0
-    amazon: 1.0
-    reddit: 0.5
-    tiktok: 0.5
-    tiktokshop: 0.5
+  tiktok_weights:              # TikTok growth: the core of the score
+    tiktokshop: 1.0            # TikTok Shop revenue for the keyword
+    shopvideos: 0.5            # shoppable-video views
+    tiktok: 0.5                # hashtag views
+  confirmation_weights:        # outside growth adds a little on its own...
+    google: 0.25
+    amazon: 0.25
+    reddit: 0.25               # set to 1.0 to treat Reddit like TikTok (early-riser signal)
+  confirmation_bonus: 0.15     # ...and each rising outside source multiplies the score by +15%
   velocity_cap: 2.0
-  breadth_bonus: 0.25          # +25% for every extra source that's rising (independent confirmation)
   saturation_strength: 4       # saturation 1.0 cuts the score to 1/5; 0.5 cuts it to 1/3
   unknown_saturation: 0.5      # assumed when there's no TikTok Shop data yet
-  unknown_sustained: 0.75      # assumed when there's no Google history
+  unknown_sustained: 0.75      # assumed when there's no history yet
   spike_penalty: 0.5           # multiply by this when the rise looks like a one-off spike
 
 # --- Keyword watchlist ---
@@ -133,27 +150,30 @@ amazon:
 # Current plan: 10 pages per weekly run = 1.0 credits/week (~4.3/month).
 kalodata:
   region: US
-  per_run_credit_cap: 1.2     # stop if a run's planned queries would cost more
+  per_run_credit_cap: 2.0     # stop if a run's planned queries would cost more
   min_balance_reserve: 2.0    # never spend the balance below this
   usd_per_credit: 0           # set this once we know what a credit costs, for cost tracking
+  # TikTok-first discovery: products in the EARLY phase on TikTok Shop, not
+  # the ones already on top. 14 pages = 1.4 credits per weekly run.
   queries:
-    # Products whose revenue grew fastest vs the previous 7 days.
-    # The revenue floor filters out tiny products with huge % jumps.
-    - key: fastest_growing_7d
+    # Small products (weekly revenue $1k-$50k) growing fastest vs the week before:
+    # the early risers most people haven't noticed yet.
+    - key: rising_small_7d
       endpoint: tiktok/product/rank
-      pages: 3
+      pages: 5
       body:
         date_range: last7Day
         sort_field: {field: revenue_growth_rate, type: DESC}
-        revenue_range: ">5000"
+        revenue_range: "1000-50000"
         need_extra: true
-    # Top sellers by revenue over the last 7 days.
-    - key: top_revenue_7d
+    # Mid-size products ($50k-$500k a week) still growing fast.
+    - key: rising_mid_7d
       endpoint: tiktok/product/rank
-      pages: 3
+      pages: 2
       body:
         date_range: last7Day
-        sort_field: {field: revenue, type: DESC}
+        sort_field: {field: revenue_growth_rate, type: DESC}
+        revenue_range: "50000-500000"
         need_extra: true
     # Products launched in the last 7 days, best sellers first.
     - key: new_launches_7d
@@ -164,6 +184,15 @@ kalodata:
         launch_date: "<7"
         sort_field: {field: revenue, type: DESC}
         need_extra: true
+    # Most-viewed shoppable videos this week (that actually sell something).
+    # Viral videos usually come before a product's sales spike.
+    - key: viral_shop_videos_7d
+      endpoint: tiktok/video/rank
+      pages: 3
+      body:
+        date_range: last7Day
+        sort_field: {field: views, type: DESC}
+        revenue_range: ">100"
     # Mid-level categories: growth, and how concentrated sales are in the top 3 shops.
     - key: categories_l2_7d
       endpoint: tiktok/category/rank
@@ -188,18 +217,24 @@ cost_caps:
 logging:
   level: INFO          # INFO for normal use, DEBUG for troubleshooting
 
-# --- Kalodata keyword search (TikTok Shop saturation per keyword) ---
+# --- Which concepts get looked up (see collectors/keywords.py) ---
+# Only TikTok-fit concepts are ever looked up. TikTok checks come first;
+# Google Trends only confirms the top TikTok candidates.
+enrichment:
+  google_recheck_weeks: 4     # re-check a candidate on Google at most every 4 weeks
+
+# --- Kalodata keyword search (TikTok Shop momentum + saturation per keyword) ---
 # 0.2 credits per keyword (one product search + one video search).
 # Looks up as many keywords as the balance allows (above min_balance_reserve),
 # most important first, and logs how many were skipped.
 kalodata_keywords:
-  max_keywords: 500           # every concept, for now (200 concepts = 40 credits/week)
-  per_run_credit_cap: 100
+  max_keywords: 100           # per weekly run = up to 20 credits
+  per_run_credit_cap: 25
 
-# --- Google Trends (via Apify) ---
-# ~$0.025 per keyword + $0.025 per batch. 200 keywords weekly = ~$5.20/week.
+# --- Google Trends (via Apify) --- confirmation only
+# ~$0.026 per keyword. 60 keywords weekly = ~$1.60/week.
 google_trends:
-  max_keywords: 500           # every concept, for now
+  max_keywords: 60            # top TikTok candidates + watchlist + shortlisted
   batch_size: 25
   geo: US
   time_range: today 12-m      # 12 months of weekly data points
@@ -207,9 +242,9 @@ google_trends:
 # --- TikTok hashtags (via Apify) ---
 # Cost per hashtag = videos_per_hashtag x ~$0.002-0.003. The hashtag's total
 # views (the key number) comes with every video, so 3 videos is enough.
-# 200 hashtags x 3 videos weekly = ~$1.20-1.80/week.
+# 100 hashtags x 3 videos weekly = ~$0.60/week.
 tiktok:
-  max_keywords: 500           # every concept, for now
+  max_keywords: 100           # same priority order as the Kalodata keyword search
   batch_size: 25
   videos_per_hashtag: 3
 

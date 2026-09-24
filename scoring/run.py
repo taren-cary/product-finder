@@ -1,24 +1,29 @@
-"""Scoring step: turn each concept's weekly metrics into an opportunity score.
+"""Scoring step: turn each TikTok-fit concept's weekly metrics into an opportunity score.
 
-    opportunity = demand_breadth_weighted_velocity
-                * (1 / (1 + saturation_strength * tiktok_saturation))
+TikTok leads; everything else confirms:
+
+    opportunity = (tiktok_demand + outside_demand)
+                * confirmation_multiplier
+                * (1 / (1 + saturation_strength * tiktok_saturation))   # headroom on TikTok Shop
                 * sustained_trend_factor
-                * margin_factor                      # 1.0 until Phase 2
-                * 100                                # to get readable numbers
+                * margin_factor                                        # 1.0 until Phase 2
+                * 100                                                  # readable numbers
 
 where
-    demand_breadth_weighted_velocity =
-        (sum over sources of weight x rising demand, each capped)
-        x (1 + breadth_bonus x (number of rising sources - 1))
+    tiktok_demand   = sum of tiktok_weights x rising TikTok growth
+                      (TikTok Shop revenue, shoppable-video views, hashtag views)
+    outside_demand  = sum of confirmation_weights x rising Google / Amazon / Reddit growth
+                      (small weights: they support, they don't lead)
+    confirmation_multiplier = 1 + confirmation_bonus x (number of outside sources rising)
 
-Only rising demand counts (falling sources add 0), so a concept scores
-highest when several independent sources are climbing at once, TikTok Shop
-is still quiet, and the climb has lasted several weeks. A one-off Google
-spike is multiplied by spike_penalty.
+Only rising growth counts (falling adds 0), capped at velocity_cap. So the top
+of the list is: climbing on TikTok, TikTok Shop still open, confirmed by
+Google/Amazon/Reddit, and a steady climb rather than a spike. A product
+rising on Amazon or Google but not yet on TikTok still scores, lower, as an
+"arbitrage" candidate.
 
-Missing data is treated cautiously: unknown saturation counts as
-"unknown_saturation" (middling), unknown sustainedness as
-"unknown_sustained". Every number here is set in config.yaml under "scoring".
+Only TikTok-fit concepts are scored. Concepts with no data get no score (not 0).
+Every number here is in config.yaml under "scoring".
 """
 
 import json
@@ -26,7 +31,7 @@ import logging
 from datetime import date
 
 from core.config import settings
-from features.run import ALL_SOURCES, week_start
+from features.run import OUTSIDE_SOURCES, TIKTOK_SOURCES, week_start
 
 log = logging.getLogger(__name__)
 
@@ -34,19 +39,26 @@ log = logging.getLogger(__name__)
 def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
     """Score one concept-week. Returns (score, breakdown for the dashboard)."""
     cap = cfg["velocity_cap"]
-    rising = {}
-    for s in ALL_SOURCES:
-        v = row.get(f"velocity_{s}")
-        if v is not None and v > 0:
-            rising[s] = min(float(v), cap)
-    base = sum(cfg["source_weights"][s] * v for s, v in rising.items())
-    breadth = sum(1 for v in rising.values() if v >= settings["features"]["rising_threshold"])
-    breadth_multiplier = 1 + cfg["breadth_bonus"] * max(0, breadth - 1)
-    demand = base * breadth_multiplier
+    threshold = settings["features"]["rising_threshold"]
+
+    def rising(sources):
+        out = {}
+        for s in sources:
+            v = row.get(f"velocity_{s}")
+            if v is not None and float(v) > 0:
+                out[s] = min(float(v), cap)
+        return out
+
+    tiktok_rising = rising(TIKTOK_SOURCES)
+    outside_rising = rising(OUTSIDE_SOURCES)
+    tiktok_demand = sum(cfg["tiktok_weights"][s] * v for s, v in tiktok_rising.items())
+    outside_demand = sum(cfg["confirmation_weights"][s] * v for s, v in outside_rising.items())
+    confirmations = sum(1 for v in outside_rising.values() if v >= threshold)
+    confirmation = 1 + cfg["confirmation_bonus"] * confirmations
 
     sat = row.get("tiktok_saturation")
     sat = float(sat) if sat is not None else cfg["unknown_saturation"]
-    saturation_factor = 1 / (1 + cfg["saturation_strength"] * sat)
+    headroom = 1 / (1 + cfg["saturation_strength"] * sat)
 
     sustained = row.get("sustained_factor")
     sustained = float(sustained) if sustained is not None else cfg["unknown_sustained"]
@@ -54,11 +66,13 @@ def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
         sustained *= cfg["spike_penalty"]
 
     margin = float(row.get("margin_factor") or 1.0)
-    score = 100 * demand * saturation_factor * sustained * margin
+    score = 100 * (tiktok_demand + outside_demand) * confirmation * headroom * sustained * margin
     breakdown = {
-        "rising_sources": {s: round(v, 3) for s, v in rising.items()},
-        "demand": round(demand, 4), "breadth_multiplier": round(breadth_multiplier, 3),
-        "saturation_used": round(sat, 3), "saturation_factor": round(saturation_factor, 3),
+        "tiktok_rising": {s: round(v, 3) for s, v in tiktok_rising.items()},
+        "outside_rising": {s: round(v, 3) for s, v in outside_rising.items()},
+        "tiktok_demand": round(tiktok_demand, 4), "outside_demand": round(outside_demand, 4),
+        "confirmations": confirmations, "confirmation_multiplier": round(confirmation, 3),
+        "saturation_used": round(sat, 3), "headroom_factor": round(headroom, 3),
         "sustained_used": round(sustained, 3), "margin_factor": margin,
     }
     return round(score, 3), breakdown
@@ -71,7 +85,8 @@ def run(conn, snapshot_date: date) -> dict:
         """
         select w.* from gapfinder.concept_weekly w
         join gapfinder.concepts c on c.id = w.concept_id
-        where w.week_start = %s and c.merged_into_id is null and c.review_status <> 'rejected'
+        where w.week_start = %s and c.merged_into_id is null
+          and c.review_status <> 'rejected' and c.tiktok_fit is true
         """,
         (week,),
     ).fetchall()
@@ -79,7 +94,7 @@ def run(conn, snapshot_date: date) -> dict:
     scored, unmeasured = [], []
     for r in rows:
         # A concept nobody has looked up yet has no score (not a score of 0).
-        has_data = (any(r.get(f"velocity_{s}") is not None for s in ALL_SOURCES)
+        has_data = (any(r.get(f"velocity_{s}") is not None for s in TIKTOK_SOURCES + OUTSIDE_SOURCES)
                     or r.get("tiktok_saturation") is not None
                     or ((r.get("details") or {}).get("google") or {}).get("points", 0) > 0)
         if not has_data:
@@ -110,4 +125,3 @@ def run(conn, snapshot_date: date) -> dict:
         )
     log.info("Scored %d concepts for the week of %s (%d not looked up yet)", len(scored), week, len(unmeasured))
     return {"records": len(scored)}
-

@@ -29,7 +29,9 @@ class GoogleTrendsCollector(BaseCollector):
         self.cost_cap_usd = settings["cost_caps"]["apify_per_day_usd"]
 
     def collect(self) -> int:
-        keywords = watch_keywords(self.conn, self.cfg["max_keywords"])
+        # Confirmation only: the top TikTok candidates (see collectors/keywords.py).
+        keywords = watch_keywords(self.conn, self.cfg["max_keywords"], self.name,
+                                  lambda k: f"trends:{k}", purpose="confirm")
         if not keywords:
             self.log.info("No keywords to look up yet (watchlist and concepts are empty)")
             return 0

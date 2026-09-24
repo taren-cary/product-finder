@@ -22,6 +22,7 @@ from collectors.kalodata import KalodataCollector
 from collectors.kalodata_keywords import KalodataKeywordsCollector
 from collectors.reddit import RedditCollector
 from collectors.tiktok import TikTokCollector
+from concepts import fit as tiktok_fit
 from concepts import run as concepts
 from core.config import settings
 from core.db import connect
@@ -33,12 +34,14 @@ from scoring import run as scoring
 
 log = logging.getLogger("run_daily")
 
-# The pipeline, in order:
-#   1. discovery collectors  - find candidate products
-#   2. steps                 - turn raw data into items, group items into concepts
-#   3. enrichment collectors - look up watchlist + concept keywords elsewhere
-#      (after step 2, so new concepts get looked up the same run)
-#   4. later steps           - weekly metrics per concept, then the opportunity score
+# The pipeline, in order (TikTok first, everything else confirms):
+#   1. discovery collectors    - find candidate products (TikTok Shop lists,
+#                                Amazon Best Sellers, Reddit)
+#   2. steps                   - raw data -> items -> concepts -> TikTok-fit verdict
+#   3. TikTok collectors       - look up TikTok-fit concepts on TikTok Shop and TikTok
+#   4. score                   - weekly metrics + a first opportunity score
+#   5. confirmation collectors - Google Trends for the top TikTok candidates
+#   6. score again             - final metrics and score with the confirmations
 # Switch collectors on/off and set their schedule in config.yaml.
 DISCOVERY_COLLECTORS = [
     KalodataCollector,
@@ -49,20 +52,24 @@ DISCOVERY_COLLECTORS = [
 STEPS = [
     ("normalize", normalize.run),
     ("concepts", concepts.run),
+    ("tiktok_fit", tiktok_fit.run),
 ]
 
-ENRICHMENT_COLLECTORS = [
-    GoogleTrendsCollector,
-    TikTokCollector,
+TIKTOK_COLLECTORS = [
     KalodataKeywordsCollector,
+    TikTokCollector,
 ]
 
-LATER_STEPS = [
+SCORING_STEPS = [
     ("features", features.run),
     ("scoring", scoring.run),
 ]
 
-ALL_COLLECTORS = DISCOVERY_COLLECTORS + ENRICHMENT_COLLECTORS
+CONFIRMATION_COLLECTORS = [
+    GoogleTrendsCollector,
+]
+
+ALL_COLLECTORS = DISCOVERY_COLLECTORS + TIKTOK_COLLECTORS + CONFIRMATION_COLLECTORS
 
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -162,11 +169,20 @@ def main() -> int:
         for step_name, step_fn in STEPS:
             results[step_name] = run_step(step_name, step_fn, run_id, today)
 
-    for collector_class in [c for c in collectors if c in ENRICHMENT_COLLECTORS]:
+    for collector_class in [c for c in collectors if c in TIKTOK_COLLECTORS]:
         results[collector_class.name] = run_collector(collector_class, run_id, today)
 
+    # First score from the TikTok data; Google Trends then confirms the top of it.
     if not args.only:
-        for step_name, step_fn in LATER_STEPS:
+        for step_name, step_fn in SCORING_STEPS:
+            results[step_name] = run_step(step_name, step_fn, run_id, today)
+
+    confirming = [c for c in collectors if c in CONFIRMATION_COLLECTORS]
+    for collector_class in confirming:
+        results[collector_class.name] = run_collector(collector_class, run_id, today)
+
+    if confirming and not args.only:
+        for step_name, step_fn in SCORING_STEPS:
             results[step_name] = run_step(step_name, step_fn, run_id, today)
 
     # Overall status: success if everything worked, failed if nothing did.
