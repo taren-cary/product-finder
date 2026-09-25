@@ -43,6 +43,7 @@ def ranking(week: date) -> pd.DataFrame:
                c.tiktok_fit, c.tiktok_fit_reason,
                w.rank, w.opportunity_score, w.demand_breadth, w.outside_velocity,
                w.tiktok_momentum, w.velocity_shopvideos, w.confirmations, w.on_tiktok_lists,
+               w.typical_price, w.price_floor, w.est_profit_per_unit, w.weekly_profit_potential,
                w.velocity_google, w.velocity_amazon, w.velocity_reddit, w.velocity_tiktok,
                w.velocity_tiktokshop, w.tiktok_saturation, w.sellers, w.creators,
                w.shop_revenue_7d, w.lead_lag_gap, w.paid_share, w.spike_risk, w.sustained_factor,

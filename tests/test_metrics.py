@@ -10,7 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import settings
 from features.run import (amazon_velocity, crowding_parts, google_metrics, growth, latest_growth,
-                          mention_velocity, percentile, relative_saturation,
+                          margin_factor, mention_velocity, percentile, profit_per_unit,
+                          relative_saturation,
                           saturation, shop_stats, sustained_from_series, video_stats,
                           weekly_growth, weighted_velocity)
 from scoring.run import opportunity
@@ -96,6 +97,19 @@ sats = relative_saturation({"quiet": quiet, "busy": busy, "middle": middle,
 assert sats["unchecked"] is None
 assert sats["quiet"] < sats["middle"] < sats["busy"], sats
 assert sats["quiet"] < 0.35 and sats["busy"] > 0.65, sats      # spread out, not squeezed together
+
+# Price and profit
+P = settings["pricing"]
+assert profit_per_unit(12.99, P) == round(12.99 * (1 - 0.08 - 0.15 - 0.25) - 4, 2)   # ~ $2.75
+assert profit_per_unit(2.99, P) < 0 and profit_per_unit(None, P) is None
+assert margin_factor(-1.0, P) == 0.1 and margin_factor(3.0, P) == 0.1
+assert margin_factor(10.0, P) == 1.0 and margin_factor(None, P) == 1.0
+assert 0.1 < margin_factor(6.5, P) < 1.0
+assert margin_factor(20.0, P) == 1.25 and margin_factor(100.0, P) == 1.25
+priced = shop_stats([{"product_id": "a", "seller_id": "s1", "revenue": 3000, "sales_volumn": 300, "unit_price": 9.99},
+                     {"product_id": "b", "seller_id": "s2", "revenue": 900, "sales_volumn": 300, "unit_price": 2.99}],
+                    active_min_revenue=300)
+assert priced["typical_price"] == 6.5 and priced["price_floor"] == 2.99 and priced["units"] == 600
 
 # TikTok-first scores (growth counted on a log scale: ln(1 + g))
 from math import log1p as L

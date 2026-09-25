@@ -94,6 +94,20 @@ features:
     top3_share: 0.10
     hashtag_views: 0.15
 
+# --- Price and profit (used by the score's margin factor) ---
+# Until real sourcing costs are added (1688, Phase 2), product cost is
+# estimated as a share of the selling price. Adjust these to your real numbers.
+pricing:
+  price_basis: typical          # typical = what buyers pay on average; floor = lowest competitor price (stricter)
+  tiktok_fee_pct: 0.08          # TikTok Shop referral fee (check your seller center)
+  creator_commission_pct: 0.15  # typical affiliate commission you'd offer creators
+  product_cost_pct: 0.25        # product + inbound freight as a share of selling price (estimate)
+  fulfillment_per_unit: 4.00    # shipping + packing per order, USD
+  min_profit_per_unit: 3.00     # at or below this, the score is cut to low_profit_factor
+  target_profit_per_unit: 10.00 # at this, the score counts in full
+  low_profit_factor: 0.1        # score multiplier for too-thin margins
+  max_high_margin_bonus: 1.25   # at twice the target profit, the score gets +25%
+
 # --- Opportunity score (scoring step) ---
 # TikTok leads, everything else confirms:
 # opportunity = (TikTok demand + outside demand) x confirmation bonus

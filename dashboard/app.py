@@ -65,7 +65,7 @@ def opportunities() -> None:
     search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
 
     df = data.ranking(week)
-    g = st.columns([1.2, 1.2, 1.6, 1.5, 1.5])
+    g = st.columns([1.1, 1.1, 1.5, 1.4, 1.4, 1.4])
     only_data = g[0].toggle("Only concepts with data", value=True,
                             help="Concepts not looked up yet have no score.")
     only_fit = g[1].toggle("Only TikTok-fit", value=True,
@@ -74,6 +74,9 @@ def opportunities() -> None:
                              help="Only concepts that showed up in this week's rising / new / viral TikTok Shop lists.")
     only_checked = g[3].toggle("Only saturation-checked", value=True,
                                help="Only concepts whose TikTok Shop sellers and creators have been checked.")
+    min_profit = g[5].selectbox("Min. est. profit / unit", [0, 3, 5, 10, 20], index=2,
+                                format_func=lambda v: "Any" if v == 0 else f"${v}",
+                                help="Estimated profit per sale at the typical price (assumptions in config.yaml, 'pricing').")
     min_market = g[4].selectbox("Min. TikTok Shop sales / week", [0, 1000, 5000, 25000, 100000], index=2,
                                 format_func=lambda v: "Any" if v == 0 else f"${v:,}",
                                 help="Total TikTok Shop revenue for the keyword over the last 7 days.")
@@ -89,6 +92,8 @@ def opportunities() -> None:
         view = view[view["saturation_checked"].fillna(False).astype(bool)]
     if min_market:
         view = view[view["shop_revenue_7d"].notna() & (view["shop_revenue_7d"] >= min_market)]
+    if min_profit:
+        view = view[view["est_profit_per_unit"].notna() & (view["est_profit_per_unit"] >= min_profit)]
     if min_confirm:
         view = view[view["confirmations"].fillna(0) >= min_confirm]
     if max_sat < 1.0:
@@ -124,7 +129,8 @@ def opportunities() -> None:
 
     st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
                "Scores firm up after 2–4 weeks of history.")
-    columns = ["rank", "name", "opportunity_score", "tiktok_momentum", "velocity_tiktokshop",
+    columns = ["rank", "name", "opportunity_score", "typical_price", "price_floor", "est_profit_per_unit",
+               "weekly_profit_potential", "tiktok_momentum", "velocity_tiktokshop",
                "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "new_product_share",
                "shop_revenue_7d", "revenue_per_seller", "confirmations",
                "google_trend", "score_trend", "on_tiktok_lists", "lead_lag_gap", "paid_share", "spike_risk",
@@ -142,6 +148,14 @@ def opportunities() -> None:
             "name": st.column_config.TextColumn("Concept", width="medium"),
             "opportunity_score": st.column_config.NumberColumn("Score", format="%.1f",
                 help="TikTok momentum (+ outside demand) x confirmations x TikTok headroom x steadiness."),
+            "typical_price": st.column_config.NumberColumn("Typical price", format="dollar",
+                help="What buyers actually pay on TikTok Shop on average (revenue / units, last 7 days)."),
+            "price_floor": st.column_config.NumberColumn("Lowest competitor", format="dollar",
+                help="Lowest price among active sellers: the price you'd be up against."),
+            "est_profit_per_unit": st.column_config.NumberColumn("Est. profit / unit", format="dollar",
+                help="At the typical price, after TikTok fee, creator commission, product cost and shipping (config.yaml 'pricing')."),
+            "weekly_profit_potential": st.column_config.NumberColumn("Weekly payout potential", format="dollar",
+                help="Est. profit per unit x an average seller's share of this week's units."),
             "tiktok_momentum": st.column_config.NumberColumn("TikTok momentum", format="percent",
                 help="Weekly growth on TikTok: shop revenue, shoppable-video views, hashtag views."),
             "velocity_shopvideos": st.column_config.NumberColumn("Shop video views", format="percent"),
@@ -258,6 +272,15 @@ def concept_details() -> None:
     m[4].metric("Lead-lag gap", pct(latest.get("lead_lag_gap")))
     m[5].metric("Views from ads", "–" if latest.get("paid_share") is None or pd.isna(latest.get("paid_share"))
                 else f"{latest['paid_share'] * 100:.0f}%")
+    def money(v):
+        return "–" if v is None or pd.isna(v) else f"${v:,.2f}"
+    p = st.columns(4)
+    p[0].metric("Typical price", money(latest.get("typical_price")), help="What buyers pay on average on TikTok Shop")
+    p[1].metric("Lowest competitor", money(latest.get("price_floor")))
+    p[2].metric("Est. profit / unit", money(latest.get("est_profit_per_unit")),
+                help="After TikTok fee, creator commission, product cost and shipping (config.yaml 'pricing')")
+    p[3].metric("Weekly payout potential", money(latest.get("weekly_profit_potential")),
+                help="Est. profit per unit x an average seller's share of this week's units")
     if latest.get("spike_risk"):
         st.warning("⚠ Spike risk: the recent Google rise looks like a one-off spike, not a steady climb.")
 

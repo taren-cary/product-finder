@@ -37,6 +37,16 @@ Confirmation from outside TikTok:
   spike_risk           The Google curve shows a one-off spike.
   paid_share           Share of shoppable-video views that come from ads.
 
+Price and profit (so a growing $2.99 product doesn't beat a solid $25 one):
+
+  typical_price        What buyers actually pay: revenue / units, last 7 days.
+  price_floor          Lowest price among active competitors.
+  est_profit_per_unit  At the typical price, after TikTok fee, creator commission,
+                       product cost and shipping (assumptions in config.yaml).
+  weekly_profit_potential  Profit per unit x an average seller's share of units.
+  margin_factor        Scales the score: low profit per unit pushes it down,
+                       high profit gives a small boost.
+
 Checks happen on a rotation (collectors/keywords.py), so growth between two
 checks a few weeks apart is converted to a per-week rate. All thresholds and
 weights are in config.yaml under "features".
@@ -135,16 +145,23 @@ def shop_stats(products: list[dict], checked_on: date | None = None,
                       keyword is broad and this measures a whole category
     """
     revenue_by_seller = defaultdict(float)
+    prices_by_seller = defaultdict(list)
     total = new_revenue = 0.0
+    units = 0
     for p in products:
         rev = float(p.get("revenue") or 0)
         total += rev
+        units += int(p.get("sales_volumn") or 0)
+        if p.get("unit_price") is not None:
+            prices_by_seller[p.get("seller_id") or p.get("product_id")].append(float(p["unit_price"]))
         revenue_by_seller[p.get("seller_id") or p.get("product_id")] += rev
         launched = _parse_date(p.get("launch_date"))
         if checked_on and launched and (checked_on - launched).days <= new_product_days:
             new_revenue += rev
     top3 = sum(sorted(revenue_by_seller.values(), reverse=True)[:3])
     active = [r for r in revenue_by_seller.values() if r >= active_min_revenue]
+    active_prices = [min(prices_by_seller[s]) for s, r in revenue_by_seller.items()
+                     if r >= active_min_revenue and prices_by_seller.get(s)]
     # Kalodata's own growth figure (percent, 7 days vs the 7 before), revenue-weighted.
     weighted = [(min(float(p["revenue_growth_rate"]), 500.0), float(p.get("revenue") or 0))
                 for p in products if p.get("revenue_growth_rate") is not None]
@@ -157,6 +174,9 @@ def shop_stats(products: list[dict], checked_on: date | None = None,
         "revenue_per_active_seller": round(sum(active) / len(active), 2) if active else None,
         "new_product_share": round(new_revenue / total, 3) if total > 0 and checked_on else None,
         "revenue": round(total, 2),
+        "units": units,
+        "typical_price": round(total / units, 2) if units > 0 else None,
+        "price_floor": round(min(active_prices), 2) if active_prices else None,
         "top3_share": round(top3 / total, 3) if total > 0 else None,
         "kalodata_growth": kalodata_growth,
         "maxed": len(products) >= 100,
@@ -207,6 +227,31 @@ def saturation(parts: dict, cfg: dict) -> float | None:
         return None
     total_weight = sum(weights[k] for k in available)
     return round(sum(weights[k] * v for k, v in available.items()) / total_weight, 3)
+
+
+def profit_per_unit(price, pcfg: dict) -> float | None:
+    """Estimated profit on one sale at this price, after TikTok's fee, the
+    creator commission, product cost (a share of price until real sourcing
+    costs exist) and shipping/packing. All assumptions are in config.yaml."""
+    if price is None:
+        return None
+    keep = 1 - pcfg["tiktok_fee_pct"] - pcfg["creator_commission_pct"] - pcfg["product_cost_pct"]
+    return round(float(price) * keep - pcfg["fulfillment_per_unit"], 2)
+
+
+def margin_factor(profit, pcfg: dict) -> float:
+    """How the score treats profit per unit: at or below the minimum it's cut
+    to low_profit_factor; it rises to 1.0 at the target; above the target it
+    gets a small bonus (up to max_high_margin_bonus). Unknown = 1.0."""
+    if profit is None:
+        return 1.0
+    low, target = pcfg["min_profit_per_unit"], pcfg["target_profit_per_unit"]
+    floor, bonus_cap = pcfg["low_profit_factor"], pcfg["max_high_margin_bonus"]
+    if profit <= low:
+        return floor
+    if profit <= target:
+        return round(floor + (1 - floor) * (profit - low) / (target - low), 3)
+    return round(min(bonus_cap, 1 + (bonus_cap - 1) * (profit - target) / target), 3)
 
 
 # How each crowding signal points: +1 = more of it means more crowded,
@@ -537,8 +582,22 @@ def run(conn, snapshot_date: date) -> dict:
             sustained = 0.5 + 0.5 * g["sustained_weeks"] / 8
             details["sustained_basis"] = "Google Trends"
 
+        # --- Price and profit ---
+        pcfg = settings["pricing"]
+        price = shop["price_floor"] if pcfg.get("price_basis") == "floor" else shop["typical_price"]
+        profit = profit_per_unit(price, pcfg) if has_shop else None
+        payout = None
+        if profit is not None and profit > 0 and shop["units"]:
+            payout = round(profit * shop["units"] / (shop["active_sellers"] + 1), 2)
+
         rows.append({
             "concept_id": c["id"], "week_start": cur_start,
+            "typical_price": shop["typical_price"] if has_shop else None,
+            "price_floor": shop["price_floor"] if has_shop else None,
+            "units_7d": shop["units"] if has_shop else None,
+            "est_profit_per_unit": profit,
+            "weekly_profit_potential": payout,
+            "margin_factor": margin_factor(profit, pcfg),
             "velocity_tiktokshop": v_shop, "velocity_shopvideos": v_videos, "velocity_tiktok": v_tiktok,
             "tiktok_momentum": momentum, "on_tiktok_lists": listed > 0,
             "velocity_google": g["velocity"], "velocity_amazon": v_amazon, "velocity_reddit": v_reddit,

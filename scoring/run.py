@@ -6,7 +6,7 @@ TikTok leads; everything else confirms:
                 * confirmation_multiplier
                 * (1 / (1 + saturation_strength * tiktok_saturation))   # headroom on TikTok Shop
                 * sustained_trend_factor
-                * margin_factor                                        # 1.0 until Phase 2
+                * margin_factor                                        # profit per unit (config.yaml "pricing")
                 * market_size_factor                                   # < 1 only for tiny markets
                 * 100                                                  # readable numbers
 
