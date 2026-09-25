@@ -50,6 +50,7 @@ def ranking(week: date) -> pd.DataFrame:
                (w.details->'crowding'->>'new_product_share')::numeric as new_product_share,
                (w.details->'shop'->>'revenue_per_active_seller')::numeric as revenue_per_seller,
                (w.tiktok_saturation is not null) as saturation_checked,
+               (w.details->>'matching_products')::int as matching_products,
                (w.sellers is not null or w.hashtag_views is not null
                 or coalesce((w.details->'google'->>'points')::int, 0) > 0) as has_data,
                (select count(*) from gapfinder.item_concept_map m where m.concept_id = c.id) as items
@@ -151,10 +152,13 @@ def weekly_source_series(keyword: str, hashtag: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=CACHE_SECONDS)
-def shop_sellers(keywords: tuple, active_min_revenue: float) -> tuple[pd.DataFrame, list]:
+def shop_sellers(keywords: tuple, active_min_revenue: float,
+                 concept_id: int | None = None) -> tuple[pd.DataFrame, list, pd.DataFrame]:
     """The TikTok Shop products behind a concept's seller count: the latest
     search for each of its keywords, merged, each product counted once.
-    Returns (one row per seller, [(keyword, date checked, products found)])."""
+    Products the relevance filter judged to be something else are left out
+    and returned separately so they can be reviewed.
+    Returns (one row per seller, [(keyword, date checked, products found)], excluded products)."""
     df = _df(
         """
         select distinct on (request_key) request_key, snapshot_date, payload
@@ -164,16 +168,28 @@ def shop_sellers(keywords: tuple, active_min_revenue: float) -> tuple[pd.DataFra
         """,
         ([f"products:{k}" for k in keywords],),
     )
-    searches, products, seen = [], [], set()
+    not_relevant = set()
+    if concept_id is not None:
+        nr = _df("select product_id from gapfinder.concept_product_matches where concept_id = %s and not relevant",
+                 (concept_id,))
+        not_relevant = set(nr["product_id"]) if len(nr) else set()
+    searches, products, excluded, seen = [], [], [], set()
     for _, r in df.iterrows():
         data = r["payload"].get("data") or []
         searches.append((r["request_key"].removeprefix("products:"), r["snapshot_date"], len(data)))
         for p in data:
-            if p.get("product_id") not in seen:
-                seen.add(p.get("product_id"))
+            pid = str(p.get("product_id"))
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if pid in not_relevant:
+                excluded.append({"product": p.get("product_name"), "seller": p.get("seller_name"),
+                                 "price": p.get("unit_price"), "revenue_7d": p.get("revenue")})
+            else:
                 products.append(p)
+    excluded_df = pd.DataFrame(excluded)
     if not products:
-        return pd.DataFrame(), searches
+        return pd.DataFrame(), searches, excluded_df
     rows = {}
     for p in products:
         key = p.get("seller_id") or p.get("product_id")
@@ -191,7 +207,7 @@ def shop_sellers(keywords: tuple, active_min_revenue: float) -> tuple[pd.DataFra
             s["newest_launch"] = launch
     out = pd.DataFrame(rows.values()).drop(columns="_top").sort_values("revenue_7d", ascending=False)
     out.insert(0, "active", out["revenue_7d"] >= active_min_revenue)
-    return out, searches
+    return out, searches, excluded_df
 
 
 @st.cache_data(ttl=CACHE_SECONDS)

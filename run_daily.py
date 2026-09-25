@@ -24,6 +24,7 @@ from collectors.reddit import RedditCollector
 from collectors.tiktok import TikTokCollector
 from concepts import fit as tiktok_fit
 from concepts import refine as refine_keywords
+from concepts import relevance
 from concepts import run as concepts
 from core.config import settings
 from core.db import connect
@@ -40,7 +41,8 @@ log = logging.getLogger("run_daily")
 #                                Amazon Best Sellers, Reddit)
 #   2. steps                   - raw data -> items -> concepts -> TikTok-fit verdict
 #                                -> narrow any keyword that was too broad
-#   3. TikTok collectors       - look up TikTok-fit concepts on TikTok Shop and TikTok
+#   3. TikTok collectors       - look up TikTok-fit concepts on TikTok Shop and TikTok,
+#                                then drop search results that are a different product
 #   4. score                   - weekly metrics + a first opportunity score
 #   5. confirmation collectors - Google Trends for the top TikTok candidates
 #   6. score again             - final metrics and score with the confirmations
@@ -174,6 +176,10 @@ def main() -> int:
 
     for collector_class in [c for c in collectors if c in TIKTOK_COLLECTORS]:
         results[collector_class.name] = run_collector(collector_class, run_id, today)
+
+    # Drop search results that are a different product, then score.
+    if not args.only:
+        results["relevance"] = run_step("relevance", relevance.run, run_id, today)
 
     # First score from the TikTok data; Google Trends then confirms the top of it.
     if not args.only:

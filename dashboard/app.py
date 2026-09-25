@@ -130,7 +130,7 @@ def opportunities() -> None:
     st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
                "Scores firm up after 2–4 weeks of history.")
     columns = ["rank", "name", "opportunity_score", "typical_price", "price_floor", "est_profit_per_unit",
-               "weekly_profit_potential", "tiktok_momentum", "velocity_tiktokshop",
+               "weekly_profit_potential", "matching_products", "tiktok_momentum", "velocity_tiktokshop",
                "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "new_product_share",
                "shop_revenue_7d", "revenue_per_seller", "confirmations",
                "google_trend", "score_trend", "on_tiktok_lists", "lead_lag_gap", "paid_share", "spike_risk",
@@ -156,6 +156,10 @@ def opportunities() -> None:
                 help="At the typical price, after TikTok fee, creator commission, product cost and shipping (config.yaml 'pricing')."),
             "weekly_profit_potential": st.column_config.NumberColumn("Weekly payout potential", format="dollar",
                 help="Est. profit per unit x an average seller's share of this week's units."),
+            "matching_products": st.column_config.NumberColumn("Matching listings", width="small",
+                help="Real TikTok Shop products behind these numbers (after the relevance filter). "
+                     "1-2 = either an early product nobody has copied yet, or the search missed other "
+                     "sellers: check the concept page."),
             "tiktok_momentum": st.column_config.NumberColumn("TikTok momentum", format="percent",
                 help="Weekly growth on TikTok: shop revenue, shoppable-video views, hashtag views."),
             "velocity_shopvideos": st.column_config.NumberColumn("Shop video views", format="percent"),
@@ -337,12 +341,12 @@ def concept_details() -> None:
     min_rev = settings["features"]["active_seller_min_revenue_7d"]
     # The same search(es) the score used for this concept.
     used = (latest.get("details") or {}).get("keywords_merged") or merge_keywords(c)[:1]
-    sellers, searches = data.shop_sellers(tuple(used), min_rev)
+    sellers, searches, excluded = data.shop_sellers(tuple(used), min_rev, concept_id)
     if searches:
         st.caption("Searched: " + "; ".join(
             f"“{k}” on {d.strftime('%b %d') if hasattr(d, 'strftime') else d} ({n} products)" for k, d, n in searches)
             + f". A seller counts as active with ${min_rev:,.0f}+ of sales in the last 7 days. "
-            "Check for products that don't belong: keyword matching isn't perfect.")
+            "Products Claude judged to be a different product are left out (see below).")
     if not len(sellers):
         st.caption("Not checked on TikTok Shop yet.")
     else:
@@ -355,6 +359,12 @@ def concept_details() -> None:
             "top_product": st.column_config.TextColumn("Best-selling product", width="large"),
             "newest_launch": st.column_config.TextColumn("Newest launch", width="small"),
         })
+    if len(excluded):
+        with st.expander(f"Left out as a different product ({len(excluded)})"):
+            st.dataframe(excluded, hide_index=True, width="stretch", column_config={
+                "product": st.column_config.TextColumn("Product", width="large"), "seller": "Seller",
+                "price": st.column_config.NumberColumn("Price", format="dollar"),
+                "revenue_7d": st.column_config.NumberColumn("Sales, 7 days", format="dollar")})
 
     # The items behind the concept
     st.subheader("Items in this concept")

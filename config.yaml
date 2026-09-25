@@ -107,6 +107,8 @@ pricing:
   target_profit_per_unit: 10.00 # at this, the score counts in full
   low_profit_factor: 0.1        # score multiplier for too-thin margins
   max_high_margin_bonus: 1.25   # at twice the target profit, the score gets +25%
+  max_assumed_share: 0.25       # payout potential assumes you'd win an average seller's share of
+                                # units, but never more than 25% (1 seller would otherwise mean 50%)
 
 # --- Opportunity score (scoring step) ---
 # TikTok leads, everything else confirms:
@@ -261,11 +263,17 @@ enrichment:
 kalodata_keywords:
   max_keywords: 100           # per weekly run = up to 20 credits
   per_run_credit_cap: 25
-  variant_top_n: 0            # also search other keywords of the top N concepts (0 = off)...
-  variants_per_concept: 2     # ...up to 2 each (0.1 credits per search)
-  merge_variants: false       # merge those results into the seller count. OFF: variants like
-                              # "car food tray" or "crampons" pulled in other products and
-                              # inflated counts (5 -> 123 sellers). Needs a relevance filter first.
+  variant_top_n: 20           # also search other keywords of the top N concepts (0 = off)...
+  variants_per_concept: 2     # ...up to 2 each (0.1 credits per search: ~2-4 credits/week)
+  merge_variants: true        # merge those results into the seller count. Safe now: the relevance
+                              # filter drops results that are a different product.
+
+# --- Relevance filter (Claude) ---
+# Drops TikTok Shop search results that are a different product before counting
+# sellers, prices and payouts. Each product is judged once per concept.
+relevance:
+  max_concepts_per_run: 40    # top concepts by score (shortlisted first); ~$0.03-0.05 each the first time
+  max_cost_per_run_usd: 3.00
 
 # --- Google Trends (via Apify) --- confirmation only
 # ~$0.026 per keyword. 60 keywords weekly = ~$1.60/week.

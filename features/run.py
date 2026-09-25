@@ -481,6 +481,9 @@ def run(conn, snapshot_date: date) -> dict:
                                 snapshot_date - timedelta(weeks=cfg["google_max_age_weeks"]), cur_end)
     history = _history(conn, snapshot_date - timedelta(weeks=12))
     lists = _tiktok_lists(conn, cur_start)
+    # Products the relevance filter judged to be something else (per concept).
+    not_relevant = {(r["concept_id"], r["product_id"]) for r in conn.execute(
+        "select concept_id, product_id from gapfinder.concept_product_matches where not relevant").fetchall()}
     amazon = _amazon_ranks(conn, cur_start, cur_end, prev_start, prev_end)
     reddit = _reddit_mentions(conn, snapshot_date)
 
@@ -508,18 +511,23 @@ def run(conn, snapshot_date: date) -> dict:
         searched = [kw]
         if settings["kalodata_keywords"].get("merge_variants"):
             searched += [k for k in merge_keywords(c) if k != kw]
-        merged, seen_products, used = [], set(), []
+        merged, seen_products, used, excluded = [], set(), [], 0
         for k in searched:
             row_k = tiktok_latest.get(("kalodata_keywords", f"products:{k}"))
             if not row_k:
                 continue
             used.append(k)
             for p in row_k["payload"].get("data") or []:
-                pid = p.get("product_id")
-                if pid not in seen_products:
-                    seen_products.add(pid)
-                    merged.append(p)
+                pid = str(p.get("product_id"))
+                if pid in seen_products:
+                    continue
+                seen_products.add(pid)
+                if (c["id"], pid) in not_relevant:
+                    excluded += 1          # a different product that matched the words
+                    continue
+                merged.append(p)
         details["keywords_merged"] = used
+        details["products_excluded_as_different"] = excluded
         shop = shop_stats(merged,
                           checked_on=prod["snapshot_date"] if prod else None,
                           active_min_revenue=cfg["active_seller_min_revenue_7d"],
@@ -588,7 +596,9 @@ def run(conn, snapshot_date: date) -> dict:
         profit = profit_per_unit(price, pcfg) if has_shop else None
         payout = None
         if profit is not None and profit > 0 and shop["units"]:
-            payout = round(profit * shop["units"] / (shop["active_sellers"] + 1), 2)
+            share = min(pcfg["max_assumed_share"], 1 / (shop["active_sellers"] + 1))
+            payout = round(profit * shop["units"] * share, 2)
+        details["matching_products"] = shop["products"]
 
         rows.append({
             "concept_id": c["id"], "week_start": cur_start,
