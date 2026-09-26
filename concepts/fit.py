@@ -16,6 +16,7 @@ import anthropic
 
 from concepts.run import _cost
 from core.config import settings
+from core.steps import StepStopped
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +117,8 @@ def run(conn, snapshot_date) -> dict:
                     **request, betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         except anthropic.BadRequestError as e:
             if "credit balance" in str(e).lower():
-                raise RuntimeError("Anthropic account is out of credit; add credit at console.anthropic.com")
+                raise StepStopped("Anthropic account is out of credit; add credit at console.anthropic.com",
+                                  total_cost, judged)
             log.warning("Fit batch failed, will retry next run: %s", e)
             continue
         except Exception as e:

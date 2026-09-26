@@ -15,6 +15,16 @@ from core.db import connect
 log = logging.getLogger(__name__)
 
 
+class StepStopped(RuntimeError):
+    """Raised by a step that has to stop partway (e.g. out of API credit).
+    Carries what was already spent, so the run log records the true cost."""
+
+    def __init__(self, message: str, cost_usd: float = 0.0, records: int = 0):
+        super().__init__(message)
+        self.cost_usd = cost_usd
+        self.records = records
+
+
 def run_step(name: str, step_fn, pipeline_run_id: int | None, snapshot_date: date) -> str:
     """Run one step. Never raises. Returns "success" or "failed"."""
     log.info("--- %s: starting ---", name)
@@ -36,7 +46,9 @@ def run_step(name: str, step_fn, pipeline_run_id: int | None, snapshot_date: dat
                          name, result.get("records", 0), result.get("cost_usd", 0))
             except Exception as e:
                 conn.rollback()
-                result, status, error = {}, "failed", f"{type(e).__name__}: {e}"
+                # Keep the cost and progress of work done before the failure.
+                result = {"records": getattr(e, "records", 0), "cost_usd": getattr(e, "cost_usd", 0)}
+                status, error = "failed", f"{type(e).__name__}: {e}"
                 log.exception("%s: failed; continuing", name)
 
             conn.execute(

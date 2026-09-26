@@ -21,6 +21,7 @@ import logging
 import anthropic
 
 from core.config import settings
+from core.steps import StepStopped
 
 log = logging.getLogger(__name__)
 
@@ -120,13 +121,15 @@ def run(conn, snapshot_date) -> dict:
         try:
             results, cost = _classify_batch(client, conn, cfg, batch)
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
-            raise RuntimeError(f"Anthropic rejected the API key; check ANTHROPIC_API_KEY in .env ({e})")
+            raise StepStopped(f"Anthropic rejected the API key; check ANTHROPIC_API_KEY in .env ({e})",
+                              total_cost, classified)
         except anthropic.BadRequestError as e:
             if "credit balance" in str(e).lower():
                 # No point trying the other batches; what's done so far is saved.
-                raise RuntimeError(
+                raise StepStopped(
                     f"Anthropic account is out of credit after {classified} items. Add credit at "
-                    "console.anthropic.com (Plans & Billing); the rest will be grouped on the next run."
+                    "console.anthropic.com (Plans & Billing); the rest will be grouped on the next run.",
+                    total_cost, classified,
                 )
             log.warning("Batch of %d items failed, will retry next run: %s", len(batch), e)
             continue
