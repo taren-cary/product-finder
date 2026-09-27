@@ -7,6 +7,11 @@ which sources it came from. Claude answers fit / not fit with a short reason.
 Concepts judged "not for TikTok" stay in the database (and can be flipped
 back from the dashboard) but are never looked up on paid sources, scored or
 ranked. A verdict set by hand from the dashboard is never overwritten.
+
+In the same request Claude also labels who the product is for (women, men,
+kids, pets, everyone), for the dashboard's audience filter. Concepts judged
+before this existed get labeled only when config.yaml's
+concepts.audience_backfill is true (a one-time pass).
 """
 
 import json
@@ -41,6 +46,13 @@ Not a fit:
 
 Be decisive. When a concept is borderline, lean toward fit only if you can picture a creator making a video that sells it.
 reason: at most 12 words.
+
+Also give audience, who the product is for:
+- "women": made for women, or bought mostly by women (women's clothing, bras, makeup, hair tools, satin pillowcases, pregnancy products).
+- "men": made for men, or bought mostly by men.
+- "kids": for babies or children.
+- "pets": for pets.
+- "everyone": general products bought by anyone (most home, kitchen, car and tech items).
 Return one result for every concept, using its concept_id."""
 
 FIT_SCHEMA = {
@@ -54,8 +66,9 @@ FIT_SCHEMA = {
                     "concept_id": {"type": "integer"},
                     "tiktok_fit": {"type": "boolean"},
                     "reason": {"type": "string"},
+                    "audience": {"type": "string", "enum": ["women", "men", "kids", "pets", "everyone"]},
                 },
-                "required": ["concept_id", "tiktok_fit", "reason"],
+                "required": ["concept_id", "tiktok_fit", "reason", "audience"],
                 "additionalProperties": False,
             },
         },
@@ -80,10 +93,13 @@ def run(conn, snapshot_date) -> dict:
             select price from gapfinder.item_snapshots
             where item_id = i.id order by snapshot_date desc limit 1
         ) s on true
-        where c.tiktok_fit is null and c.merged_into_id is null
+        where c.merged_into_id is null
+          and (c.tiktok_fit is null
+               or (%s and c.tiktok_fit is true and c.audience is null))
         group by c.id
         order by c.id
-        """
+        """,
+        (bool(cfg.get("audience_backfill")),),
     ).fetchall()
     if not concepts:
         log.info("Every concept already has a TikTok-fit verdict")
@@ -131,16 +147,22 @@ def run(conn, snapshot_date) -> dict:
             continue
         text = next(b.text for b in response.content if b.type == "text")
         ids = {c["id"] for c in batch}
-        rows = [(r["tiktok_fit"], r["reason"][:200], r["concept_id"])
+        rows = [(r["tiktok_fit"], r["reason"][:200], r["audience"], r["concept_id"])
                 for r in json.loads(text)["results"] if r["concept_id"] in ids]
         with conn.cursor() as cur:
+            # Only fill in what's missing: an existing verdict or audience
+            # (including anything set by hand) is never overwritten.
             cur.executemany(
                 """
-                update gapfinder.concepts
-                set tiktok_fit = %s, tiktok_fit_reason = %s, tiktok_fit_by = 'claude'
-                where id = %s and tiktok_fit is null   -- never overwrite a manual verdict
+                update gapfinder.concepts set
+                    tiktok_fit_reason = case when tiktok_fit is null then %(reason)s else tiktok_fit_reason end,
+                    tiktok_fit_by     = case when tiktok_fit is null then 'claude' else tiktok_fit_by end,
+                    tiktok_fit        = coalesce(tiktok_fit, %(fit)s),
+                    audience_by       = case when audience is null then 'claude' else audience_by end,
+                    audience          = coalesce(audience, %(audience)s)
+                where id = %(id)s
                 """,
-                rows,
+                [{"fit": f, "reason": why, "audience": aud, "id": cid} for f, why, aud, cid in rows],
             )
         conn.commit()
         judged += len(rows)

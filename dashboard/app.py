@@ -28,6 +28,8 @@ from dashboard import charts, data  # noqa: E402
 st.set_page_config(page_title="Product Gap Finder", layout="wide")
 
 STATUSES = ["new", "reviewed", "shortlisted", "rejected"]
+AUDIENCES = {"women": "👩 Women", "men": "👨 Men", "kids": "🧒 Kids & baby", "pets": "🐾 Pets",
+             "everyone": "Everyone"}
 SOURCE_LABELS = {"tiktokshop": "TikTok Shop revenue", "shopvideos": "Shoppable video views",
                  "tiktok": "TikTok hashtag views", "google": "Google", "amazon": "Amazon", "reddit": "Reddit"}
 TIKTOK_KEYS = ("tiktokshop", "shopvideos", "tiktok")
@@ -65,7 +67,7 @@ def opportunities() -> None:
     search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
 
     df = data.ranking(week)
-    g = st.columns([1.1, 1.1, 1.5, 1.4, 1.4, 1.4])
+    g = st.columns([1.1, 1.1, 1.5, 1.4, 1.4, 1.4, 1.1])
     only_data = g[0].toggle("Only concepts with data", value=True,
                             help="Concepts not looked up yet have no score.")
     only_fit = g[1].toggle("Only TikTok-fit", value=True,
@@ -74,6 +76,8 @@ def opportunities() -> None:
                              help="Only concepts that showed up in this week's rising / new / viral TikTok Shop lists.")
     only_checked = g[3].toggle("Only saturation-checked", value=True,
                                help="Only concepts whose TikTok Shop sellers and creators have been checked.")
+    women_only = g[6].toggle("👩 Women only", value=False,
+                             help="Products made for women or bought mostly by women.")
     min_profit = g[5].selectbox("Min. est. profit / unit", [0, 3, 5, 10, 20], index=2,
                                 format_func=lambda v: "Any" if v == 0 else f"${v}",
                                 help="Estimated profit per sale at the typical price (assumptions in config.yaml, 'pricing').")
@@ -84,6 +88,11 @@ def opportunities() -> None:
     view = df[df["review_status"].isin(statuses)]
     if only_fit:
         view = view[view["tiktok_fit"].fillna(False).astype(bool)]
+    if women_only:
+        view = view[view["audience"] == "women"]
+        if not len(view) and df["audience"].isna().all():
+            st.info("Concepts haven't been labeled by audience yet, so nothing shows here. "
+                    "They get labeled in the TikTok-fit check.")
     if only_data:
         view = view[view["has_data"].fillna(False)]
     if only_lists:
@@ -129,7 +138,8 @@ def opportunities() -> None:
 
     st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
                "Scores firm up after 2–4 weeks of history.")
-    columns = ["rank", "name", "opportunity_score", "typical_price", "price_floor", "est_profit_per_unit",
+    view["audience_label"] = view["audience"].map(AUDIENCES)
+    columns = ["rank", "name", "audience_label", "opportunity_score", "typical_price", "price_floor", "est_profit_per_unit",
                "weekly_profit_potential", "matching_products", "tiktok_momentum", "velocity_tiktokshop",
                "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "new_product_share",
                "shop_revenue_7d", "revenue_per_seller", "confirmations",
@@ -146,6 +156,7 @@ def opportunities() -> None:
         column_config={
             "rank": st.column_config.NumberColumn("Rank", width="small"),
             "name": st.column_config.TextColumn("Concept", width="medium"),
+            "audience_label": st.column_config.TextColumn("For", width="small"),
             "opportunity_score": st.column_config.NumberColumn("Score", format="%.1f",
                 help="TikTok momentum (+ outside demand) x confirmations x TikTok headroom x steadiness."),
             "typical_price": st.column_config.NumberColumn("Typical price", format="dollar",
@@ -241,6 +252,14 @@ def concept_details() -> None:
     fc = st.columns([3, 1.2])
     fc[0].markdown(f"**{fit_label}** — {c.get('tiktok_fit_reason') or ''}"
                    + (" *(set by hand)*" if c.get("tiktok_fit_by") == "manual" else ""))
+    options = list(AUDIENCES)
+    current = c.get("audience") if c.get("audience") in AUDIENCES else None
+    chosen = st.selectbox("Who it's for", options, index=options.index(current) if current else None,
+                          format_func=lambda a: AUDIENCES[a], placeholder="Not labeled yet",
+                          key=f"audience_{concept_id}")
+    if chosen and chosen != current:
+        data.set_audience(concept_id, chosen)
+        st.rerun()
     if fit is True:
         if fc[1].button("Mark not for TikTok"):
             data.set_fit([concept_id], False)

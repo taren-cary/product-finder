@@ -40,7 +40,7 @@ def ranking(week: date) -> pd.DataFrame:
     return _df(
         """
         select c.id, c.name, c.category, c.keywords, c.review_status, c.created_at::date as first_spotted,
-               c.tiktok_fit, c.tiktok_fit_reason,
+               c.tiktok_fit, c.tiktok_fit_reason, c.audience,
                w.rank, w.opportunity_score, w.demand_breadth, w.outside_velocity,
                w.tiktok_momentum, w.velocity_shopvideos, w.confirmations, w.on_tiktok_lists,
                w.typical_price, w.price_floor, w.est_profit_per_unit, w.weekly_profit_potential,
@@ -313,6 +313,14 @@ def set_fit(concept_ids: list[int], fit: bool) -> None:
         where id = any(%s)
         """,
         (fit, reason, concept_ids),
+    ))
+
+
+def set_audience(concept_id: int, audience: str) -> None:
+    """Change who a concept is for by hand (never overwritten afterwards)."""
+    _write(lambda conn: conn.execute(
+        "update gapfinder.concepts set audience = %s, audience_by = 'manual', updated_at = now() where id = %s",
+        (audience, concept_id),
     ))
 
 
