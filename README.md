@@ -45,8 +45,11 @@ including errors and estimated cost.
 
 ## Dashboard
 
-Double-click **Open Dashboard.bat** in this folder. It opens in your browser
-(http://localhost:8501); keep the black window open while you use it.
+Double-click **Open Dashboard.bat** in this folder. It starts the dashboard in
+the background (no window to keep open) if it isn't already running, then opens
+http://localhost:8501 in your browser. Double-clicking it again is always safe.
+To stop the dashboard, double-click **Stop Dashboard.bat**. If something goes
+wrong, the dashboard's output is in `logs/dashboard.log` and `logs/dashboard_errors.log`.
 
 - **Opportunities**: concepts ranked by opportunity score, with filters
   (rising sources, TikTok saturation, first spotted, status, search). Select

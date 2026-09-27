@@ -1,9 +1,6 @@
 @echo off
 rem Opens the Product Gap Finder dashboard in your browser.
-rem Leave this window open while you use the dashboard; close it to stop.
+rem The dashboard runs hidden in the background (no window to close by accident).
+rem If it's already running, this just opens the browser. To stop it, use Stop Dashboard.bat.
 cd /d "%~dp0"
-echo Starting the dashboard... your browser will open in a few seconds.
-rem Open the browser once the dashboard has had a moment to start.
-start "" /min cmd /c "timeout /t 5 /nobreak >nul & start http://localhost:8501"
-".venv\Scripts\streamlit.exe" run dashboard\app.py
-pause
+powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0dashboard\start_dashboard.ps1"
