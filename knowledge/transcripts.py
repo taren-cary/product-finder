@@ -5,13 +5,16 @@ For every APPROVED channel:
   * look up each video's upload date and skip anything older than that
   * download the English captions with timestamps
 
-Nothing here uses Claude. YouTube sometimes blocks lots of rapid requests;
-we pause between videos and stop for the day if it starts blocking, then
-pick up where we left off on the next run.
+Nothing here uses Claude. YouTube blocks home connections that fetch lots of
+transcripts, so if WEBSHARE_PROXY_USERNAME / WEBSHARE_PROXY_PASSWORD are in
+.env, transcripts go through that rotating proxy. If YouTube still blocks us
+we stop and pick up where we left off on the next run.
 """
 
 import logging
 import time
+
+import requests
 from datetime import date
 
 from psycopg.types.json import Jsonb
@@ -19,10 +22,11 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (CouldNotRetrieveTranscript, IpBlocked,
                                             NoTranscriptFound, RequestBlocked, TranscriptsDisabled)
 
-from knowledge.channels import channel_videos, oldest_upload_allowed, upload_date
+from knowledge.channels import (channel_videos, english_caption_url, oldest_upload_allowed, upload_date,
+                                video_info, webshare_proxy)
 
 log = logging.getLogger(__name__)
-PAUSE_S = 1.5
+PAUSE_S = 1.5   # between videos without a proxy
 
 
 def add_channel_videos(conn) -> int:
@@ -51,6 +55,28 @@ def add_channel_videos(conn) -> int:
     return added
 
 
+def download_captions(url: str, proxy) -> list[dict]:
+    """Just the caption file (~30-50 KB), through the proxy when there is one.
+    A blocked address just means trying again: each retry gets a new address."""
+    proxies = {"http": proxy.url, "https": proxy.url} if proxy else None
+    for attempt in range(6):
+        r = requests.get(url, proxies=proxies, timeout=30)
+        if r.status_code == 429 and proxy:
+            continue
+        if r.status_code == 429:
+            raise IpBlocked("captions")
+        r.raise_for_status()
+        break
+    else:
+        raise IpBlocked("captions")
+    segments = []
+    for event in r.json().get("events") or []:
+        text = "".join(seg.get("utf8", "") for seg in event.get("segs") or []).strip()
+        if text:
+            segments.append({"start": round(event.get("tStartMs", 0) / 1000), "text": text})
+    return segments
+
+
 def fetch_transcripts(conn, limit: int | None = None) -> dict:
     rows = conn.execute(
         """
@@ -60,20 +86,33 @@ def fetch_transcripts(conn, limit: int | None = None) -> dict:
         order by v.view_count desc nulls last
         """ + (f" limit {int(limit)}" if limit else "")
     ).fetchall()
-    api = YouTubeTranscriptApi()
+    proxy = webshare_proxy()
+    log.info("Fetching transcripts %s", "through the Webshare proxy" if proxy else "directly (no proxy set)")
+    api = YouTubeTranscriptApi(proxy_config=proxy)
     oldest = oldest_upload_allowed()
-    done = {"transcribed": 0, "no_transcript": 0, "too_old": 0, "failed": 0}
+    done = {"transcribed": 0, "no_transcript": 0, "too_old": 0, "failed": 0, "used_fallback": 0}
     for i, r in enumerate(rows):
         vid = r["video_id"]
         try:
-            uploaded = upload_date(vid)
+            info = video_info(vid)
+            uploaded = upload_date(vid, info)
             if uploaded and uploaded < oldest:
                 conn.execute("update gapfinder.kb_videos set status = 'failed', upload_date = %s, "
                              "error = 'older than the age limit' where video_id = %s", (uploaded, vid))
                 done["too_old"] += 1
             else:
-                fetched = api.fetch(vid, languages=["en", "en-US", "en-GB"])
-                segments = [{"start": round(s.start), "text": s.text} for s in fetched.snippets]
+                caption_url = english_caption_url(info)
+                if not caption_url:
+                    raise NoTranscriptFound(vid, ["en"], None)
+                try:
+                    segments = download_captions(caption_url, proxy)
+                except (IpBlocked, requests.RequestException):
+                    # Fallback: the transcript library (loads the whole page through the proxy; more data).
+                    done["used_fallback"] += 1
+                    fetched = api.fetch(vid, languages=["en", "en-US", "en-GB"])
+                    segments = [{"start": round(s.start), "text": s.text} for s in fetched.snippets]
+                if not segments:
+                    raise NoTranscriptFound(vid, ["en"], None)
                 text_len = sum(len(s["text"]) for s in segments)
                 conn.execute(
                     """
@@ -98,6 +137,7 @@ def fetch_transcripts(conn, limit: int | None = None) -> dict:
         conn.commit()
         if (i + 1) % 20 == 0:
             log.info("Transcripts: %d/%d (%s)", i + 1, len(rows), done)
-        time.sleep(PAUSE_S)
+        if not proxy:
+            time.sleep(PAUSE_S)
     log.info("Transcripts done: %s", done)
     return done
