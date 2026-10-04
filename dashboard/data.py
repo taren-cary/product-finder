@@ -404,3 +404,58 @@ def mark_not_product(item_ids: list[int]) -> None:
 
 def keyword_for(concept_row: dict) -> str:
     return concept_keyword(concept_row)
+
+
+# --- Knowledge base ------------------------------------------------------------
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def kb_channels() -> pd.DataFrame:
+    return _df(
+        """
+        select ch.channel_id, ch.name, ch.status, ch.videos_found, ch.total_views,
+               ch.sample_titles, ch.url, ch.added_by,
+               count(v.*) filter (where v.status = 'extracted') as videos_processed
+        from gapfinder.kb_channels ch
+        left join gapfinder.kb_videos v on v.channel_id = ch.channel_id
+        group by ch.channel_id
+        order by (ch.status = 'approved') desc, (ch.status = 'candidate') desc,
+                 ch.videos_found desc, ch.total_views desc
+        """
+    )
+
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def kb_stats() -> dict:
+    df = _df(
+        """
+        select (select count(*) from gapfinder.kb_channels where status = 'approved') as approved,
+               (select count(*) from gapfinder.kb_channels where status = 'candidate') as candidates,
+               (select count(*) from gapfinder.kb_videos v join gapfinder.kb_channels c using (channel_id)
+                 where c.status = 'approved') as approved_videos,
+               (select count(*) from gapfinder.kb_videos where status = 'extracted') as extracted,
+               (select count(*) from gapfinder.kb_insights) as insights
+        """
+    )
+    return df.iloc[0].to_dict()
+
+
+def save_kb_statuses(changes: dict) -> None:
+    """changes: channel_id -> new status."""
+    def do(conn):
+        with conn.cursor() as cur:
+            cur.executemany(
+                "update gapfinder.kb_channels set status = %s, updated_at = now() where channel_id = %s",
+                [(status, cid) for cid, status in changes.items()],
+            )
+    _write(do)
+
+
+def add_kb_channel(info: dict) -> None:
+    _write(lambda conn: conn.execute(
+        """
+        insert into gapfinder.kb_channels (channel_id, name, url, status, added_by)
+        values (%s, %s, %s, 'approved', 'manual')
+        on conflict (channel_id) do update set status = 'approved', updated_at = now()
+        """,
+        (info["channel_id"], info["name"], info["url"]),
+    ))

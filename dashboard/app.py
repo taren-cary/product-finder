@@ -460,6 +460,99 @@ def concept_details() -> None:
 # Page 3: Pipeline health
 # =============================================================================
 
+# =============================================================================
+# Page 4: Knowledge base (YouTube know-how about TikTok Shop)
+# =============================================================================
+
+KB_STATUS_LABELS = {"candidate": "⏳ To review", "approved": "✅ Approved", "rejected": "🚫 Rejected"}
+
+
+def knowledge_base() -> None:
+    st.title("Knowledge base")
+    st.caption("Everything taught on YouTube about selling and affiliate marketing on TikTok Shop, "
+               "from the channels you approve.")
+    stats = data.kb_stats()
+    m = st.columns(5)
+    m[0].metric("Approved channels", int(stats["approved"]))
+    m[1].metric("Waiting for review", int(stats["candidates"]))
+    m[2].metric("Videos from approved channels", int(stats["approved_videos"]))
+    m[3].metric("Videos processed", int(stats["extracted"]))
+    m[4].metric("Insights", int(stats["insights"]))
+
+    ask_tab, channels_tab = st.tabs(["💬 Ask", "📺 Channels"])
+
+    with channels_tab:
+        st.markdown("**Choose which channels to learn from.** Set each one to Approved or Rejected, then "
+                    "click Save. Only approved channels are processed; their other TikTok Shop videos from "
+                    "the past ~15 months are added too.")
+        df = data.kb_channels()
+        if not len(df):
+            st.info("No channels yet. Run discovery first.")
+        else:
+            show = st.radio("Show", ["To review", "Approved", "Rejected", "All"], horizontal=True)
+            wanted = {"To review": ["candidate"], "Approved": ["approved"],
+                      "Rejected": ["rejected"], "All": list(KB_STATUS_LABELS)}[show]
+            view = df[df["status"].isin(wanted)].copy()
+            view["status"] = view["status"].map(KB_STATUS_LABELS)
+            view["examples"] = view["sample_titles"].map(lambda t: " | ".join((t or [])[:3]))
+            edited = st.data_editor(
+                view[["status", "name", "videos_found", "total_views", "examples", "url", "channel_id"]],
+                hide_index=True, width="stretch", height=520, key=f"kb_editor_{show}",
+                disabled=["name", "videos_found", "total_views", "examples", "url", "channel_id"],
+                column_config={
+                    "status": st.column_config.SelectboxColumn("Status", options=list(KB_STATUS_LABELS.values()),
+                                                               required=True, width="small"),
+                    "name": st.column_config.TextColumn("Channel", width="medium"),
+                    "videos_found": st.column_config.NumberColumn("Matching videos", width="small"),
+                    "total_views": st.column_config.NumberColumn("Views", format="compact", width="small"),
+                    "examples": st.column_config.TextColumn("Example titles", width="large"),
+                    "url": st.column_config.LinkColumn("Link", display_text="open", width="small"),
+                    "channel_id": None,
+                })
+            back = {v: k for k, v in KB_STATUS_LABELS.items()}
+            original = dict(zip(view["channel_id"], view["status"]))
+            changes = {cid: back[s] for cid, s in zip(edited["channel_id"], edited["status"])
+                       if s != original.get(cid)}
+            c = st.columns([1, 4])
+            if c[0].button(f"Save {len(changes)} change(s)" if changes else "Save", type="primary",
+                           disabled=not changes):
+                data.save_kb_statuses(changes)
+                st.toast(f"Saved {len(changes)} channel(s)")
+                st.rerun()
+
+        st.markdown("**Add a channel you trust**")
+        a = st.columns([4, 1])
+        link = a[0].text_input("YouTube channel or video link", label_visibility="collapsed",
+                               placeholder="https://www.youtube.com/@channelname")
+        if a[1].button("Add & approve", disabled=not link.strip()):
+            from knowledge.channels import resolve_channel
+            try:
+                info = resolve_channel(link)
+                data.add_kb_channel(info)
+                st.toast(f"Added and approved {info['name']}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't add that channel: {e}")
+
+    with ask_tab:
+        if int(stats["insights"]) == 0:
+            st.info("Nothing to ask yet. Approve channels in the Channels tab; once their videos are processed, "
+                    "you can ask questions here.")
+        else:
+            from knowledge.ask import answer
+            q = st.text_input("Ask anything about selling or affiliate marketing on TikTok Shop",
+                              placeholder="e.g. How do I get creators to promote my product?")
+            who = st.radio("For", ["Both", "Seller", "Affiliate"], horizontal=True)
+            if q.strip() and st.button("Ask", type="primary"):
+                with st.spinner("Searching the knowledge base..."):
+                    result = answer(q, None if who == "Both" else who.lower())
+                st.markdown(result["answer"])
+                st.caption(f"Based on {len(result['insights'])} insights · cost ${result['cost_usd']:.3f}")
+                with st.expander("Sources"):
+                    for s in result["sources"]:
+                        st.markdown(f"- [{s['title']}]({s['url']}) — {s['channel']}")
+
+
 def kalodata_balance() -> str:
     r = requests.get("https://www.kalodata.com/openapi/v1/credit/balance",
                      headers={"X-API-Key": require_env("KALODATA_API_KEY")}, timeout=20)
@@ -529,4 +622,5 @@ st.sidebar.caption("Data refreshes on its own every minute.")
 opportunities_page = st.Page(opportunities, title="Opportunities", icon="📈", default=True)
 concept_page = st.Page(concept_details, title="Concept details", icon="🔎", url_path="concept")
 health_page = st.Page(pipeline_health, title="Pipeline health", icon="🩺", url_path="health")
-st.navigation([opportunities_page, concept_page, health_page]).run()
+knowledge_page = st.Page(knowledge_base, title="Knowledge base", icon="📚", url_path="knowledge")
+st.navigation([opportunities_page, concept_page, knowledge_page, health_page]).run()

@@ -334,3 +334,57 @@ reddit:
     - obsessed with
     - life changing
     - can't live without
+
+# --- YouTube knowledge base (TikTok Shop selling + affiliate know-how) ---
+# Discovery finds candidate channels (free). Nothing is transcribed or sent to
+# Claude until you approve a channel on the dashboard's "Knowledge base" page.
+knowledge:
+  model: claude-sonnet-5        # extraction, merging and answering questions
+  results_per_search: 40
+  min_duration_s: 240           # skip Shorts
+  max_duration_s: 21600         # skip anything over 6 hours
+  min_views: 1000
+  max_age_days: 450             # ignore videos older than ~15 months (TikTok Shop rules change fast)
+  searches:
+    # Selling
+    - tiktok shop seller tutorial
+    - how to sell on tiktok shop
+    - tiktok shop product research
+    - tiktok shop finding winning products
+    - tiktok shop getting affiliates to promote your product
+    - tiktok shop free samples creators
+    - tiktok shop gmv max ads
+    - tiktok shop account health violations
+    - tiktok shop shipping fulfillment
+    - tiktok shop fbt fulfilled by tiktok
+    - tiktok shop listing optimization
+    - tiktok shop scaling sales
+    - tiktok shop live selling
+    - tiktok shop print on demand
+    - tiktok shop sourcing suppliers
+    # Affiliate
+    - tiktok shop affiliate tutorial
+    - tiktok shop affiliate how to make money
+    - tiktok shop affiliate video tips
+    - tiktok shop affiliate faceless
+    - tiktok shop affiliate choosing products
+  extract_max_cost_usd: 15.00   # stop extraction for the run once Claude spend reaches this
+  topics:                       # every extracted tip is filed under one of these
+    - account setup and verification
+    - account health and violations
+    - product research and selection
+    - sourcing and suppliers
+    - print on demand
+    - pricing and margins
+    - listings and product pages
+    - shipping and fulfillment
+    - creator outreach and free samples
+    - affiliate commissions and programs
+    - content and video creation
+    - live selling
+    - ads and GMV Max
+    - algorithm and reach
+    - scaling and operations
+    - customer service and returns
+    - tools and software
+    - other
