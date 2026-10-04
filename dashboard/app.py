@@ -483,8 +483,8 @@ def knowledge_base() -> None:
 
     with channels_tab:
         st.markdown("**Choose which channels to learn from.** Set each one to Approved or Rejected, then "
-                    "click Save. Only approved channels are processed; their other TikTok Shop videos from "
-                    "the past ~15 months are added too.")
+                    "click Save. Only approved channels are processed; every video they posted in "
+                    "the past year is added.")
         df = data.kb_channels()
         if not len(df):
             st.info("No channels yet. Run discovery first.")

@@ -344,7 +344,7 @@ knowledge:
   min_duration_s: 240           # skip Shorts
   max_duration_s: 21600         # skip anything over 6 hours
   min_views: 1000
-  max_age_days: 450             # ignore videos older than ~15 months (TikTok Shop rules change fast)
+  max_age_days: 365             # only videos from the past year (TikTok Shop rules change fast)
   searches:
     # Selling
     - tiktok shop seller tutorial

@@ -1,14 +1,14 @@
-"""Channel helpers: add a channel by its link, and list an approved channel's
-TikTok Shop videos from the past year (free, via yt-dlp)."""
+"""Channel helpers: add a channel by its link, and list every video an approved
+channel uploaded in the past year (free, via yt-dlp)."""
 
-import re
 from datetime import date, timedelta
 
 import yt_dlp
 
 from core.config import settings
 
-TOPIC = re.compile(r"tik\s*tok\s*shop|tts\b|tiktok affiliate", re.I)
+# Videos only paying channel members can watch have no public transcript.
+LOCKED = {"subscriber_only", "premium_only", "needs_auth"}
 
 
 def resolve_channel(url: str) -> dict:
@@ -24,24 +24,45 @@ def resolve_channel(url: str) -> dict:
             "url": info.get("channel_url") or f"https://www.youtube.com/channel/{cid}"}
 
 
-def channel_videos(channel_id: str, limit: int = 150) -> list[dict]:
-    """The channel's recent uploads whose titles are about TikTok Shop, within
-    the length limits in config.yaml. Upload dates aren't known yet (filled in
-    when the transcript is fetched); the newest `limit` uploads are checked."""
-    cfg = settings["knowledge"]
+def upload_date(video_id: str) -> date | None:
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as ydl:
+        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+    d = info.get("upload_date")
+    return date(int(d[:4]), int(d[4:6]), int(d[6:8])) if d else None
+
+
+def channel_videos(channel_id: str, limit: int = 1000) -> list[dict]:
+    """Every regular video (not Shorts or livestreams) the channel uploaded
+    since the age limit in config.yaml.
+
+    YouTube's channel list has no dates but is newest-first, so we look up the
+    date of a handful of videos (a binary search) to find where the cutoff falls.
+    """
     url = f"https://www.youtube.com/channel/{channel_id}/videos"
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True,
                            "playlistend": limit, "skip_download": True}) as ydl:
         info = ydl.extract_info(url, download=False)
-    out = []
-    for v in info.get("entries") or []:
-        title, duration = v.get("title") or "", v.get("duration") or 0
-        if not v.get("id") or not TOPIC.search(title):
-            continue
-        if duration and not (cfg["min_duration_s"] <= duration <= cfg["max_duration_s"]):
-            continue
-        out.append({"id": v["id"], "title": title, "duration": duration, "view_count": v.get("view_count")})
-    return out
+    videos = [v for v in info.get("entries") or [] if v.get("id")]
+    oldest = oldest_upload_allowed()
+
+    def recent(i: int) -> bool:
+        try:
+            d = upload_date(videos[i]["id"])
+        except Exception:
+            return True          # can't tell (e.g. members-only); assume it's in range
+        return d is None or d >= oldest
+
+    lo, hi = 0, len(videos)      # videos[:lo] are recent, videos[hi:] are too old
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if recent(mid):
+            lo = mid + 1
+        else:
+            hi = mid
+    return [{"id": v["id"], "title": v.get("title") or "", "duration": v.get("duration") or 0,
+             "view_count": v.get("view_count")}
+            for v in videos[:lo]
+            if v.get("availability") not in LOCKED and "members only" not in (v.get("title") or "").lower()]
 
 
 def oldest_upload_allowed() -> date:

@@ -1,8 +1,8 @@
 """Step 2: collect videos from approved channels and fetch their transcripts (free).
 
 For every APPROVED channel:
-  * add its other TikTok Shop videos from its uploads (titles mentioning TikTok Shop)
-  * look up each video's upload date and skip anything older than max_age_days
+  * add every video it uploaded in the past year (max_age_days)
+  * look up each video's upload date and skip anything older than that
   * download the English captions with timestamps
 
 Nothing here uses Claude. YouTube sometimes blocks lots of rapid requests;
@@ -14,20 +14,19 @@ import logging
 import time
 from datetime import date
 
-import yt_dlp
 from psycopg.types.json import Jsonb
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (CouldNotRetrieveTranscript, IpBlocked,
                                             NoTranscriptFound, RequestBlocked, TranscriptsDisabled)
 
-from knowledge.channels import channel_videos, oldest_upload_allowed
+from knowledge.channels import channel_videos, oldest_upload_allowed, upload_date
 
 log = logging.getLogger(__name__)
 PAUSE_S = 1.5
 
 
 def add_channel_videos(conn) -> int:
-    """Add TikTok Shop videos from approved channels' uploads."""
+    """Add every past-year video from approved channels' uploads."""
     channels = conn.execute(
         "select channel_id, name from gapfinder.kb_channels where status = 'approved'").fetchall()
     added = 0
@@ -48,15 +47,8 @@ def add_channel_videos(conn) -> int:
             )
             added += cur.rowcount or 0
         conn.commit()
-        log.info("%s: %d TikTok Shop videos in recent uploads", ch["name"], len(videos))
+        log.info("%s: %d videos in the past year", ch["name"], len(videos))
     return added
-
-
-def upload_date(video_id: str) -> date | None:
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-    d = info.get("upload_date")
-    return date(int(d[:4]), int(d[4:6]), int(d[6:8])) if d else None
 
 
 def fetch_transcripts(conn, limit: int | None = None) -> dict:
