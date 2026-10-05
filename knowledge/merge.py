@@ -26,7 +26,7 @@ from core.config import settings
 
 log = logging.getLogger(__name__)
 
-ITEMS_PER_REQUEST = 200
+ITEMS_PER_REQUEST = 100   # 200 sometimes ran past the answer-length limit
 KEEP_SEPARATE = {"hook or script", "case study"}   # never merged; each stays its own insight
 BATCH_DISCOUNT = 0.5
 POLL_SECONDS = 60
