@@ -23,6 +23,7 @@ MAX_INSIGHTS = 40
 PROMPT = """You are an advisor for a founder starting out on TikTok Shop (as a seller, and possibly as an affiliate). Answer the question using ONLY the numbered insights below, which were collected from YouTube creators who teach TikTok Shop.
 
 - Be practical and direct: give steps, numbers and specifics where the insights have them.
+- When insights include exact words (hooks, scripts, messages), quote them; the wording is often the most useful part.
 - Cite insights like [3] after the sentences that use them.
 - Mention when creators disagree, and when advice is backed by many creators (the "said by" counts).
 - Advice ages fast on TikTok Shop; prefer newer insights when they conflict.
@@ -36,12 +37,12 @@ def _search(conn, question: str, audience: str | None) -> list[dict]:
         with q as (
             select nullif(replace(plainto_tsquery('english', %(q)s)::text, '&', '|'), '')::tsquery as query
         )
-        select i.id, i.topic, i.audience, i.statement, i.details, i.contradictions,
+        select i.id, i.topic, i.kind, i.audience, i.statement, i.details, i.quote, i.contradictions,
                i.video_count, i.channel_count, i.latest_upload
         from gapfinder.kb_insights i, q
-        where q.query is not null and i.search @@ q.query
+        where q.query is not null and i.search_all @@ q.query
           and (%(aud)s::text is null or i.audience in (%(aud)s, 'both'))
-        order by ts_rank(i.search, q.query) * ln(2 + i.channel_count) desc
+        order by ts_rank(i.search_all, q.query) * ln(2 + i.channel_count) desc
         limit %(n)s
         """,
         {"q": question, "aud": audience, "n": MAX_INSIGHTS},
@@ -71,9 +72,10 @@ def answer(question: str, audience: str | None = None) -> dict:
             return {"answer": "Nothing in the knowledge base matches that question yet. Try different words.",
                     "insights": [], "sources": [], "cost_usd": 0.0}
         numbered = "\n".join(
-            f"[{n}] ({i['topic']}; for {i['audience']}; said by {i['channel_count']} channel(s); "
+            f"[{n}] ({i['kind']}; {i['topic']}; for {i['audience']}; said by {i['channel_count']} channel(s); "
             f"newest {i['latest_upload']}) {i['statement']}"
             + (f" Details: {i['details']}" if i["details"] else "")
+            + (f' Exact words: "{i["quote"]}"' if i["quote"] else "")
             + (f" Disagreement: {i['contradictions']}" if i["contradictions"] else "")
             for n, i in enumerate(insights, 1))
         response = anthropic.Anthropic().messages.create(
