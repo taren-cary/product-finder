@@ -51,6 +51,8 @@ def main(step: str, arg: str | None = None) -> None:
             print(extract.collect_batch(conn))
         elif step == "extract":
             print(extract.run(conn, max_cost_usd=settings["knowledge"]["extract_max_cost_usd"]))
+        elif step == "redo":
+            print({"queued_again": extract.redo_old_versions(conn)})
         elif step == "merge":
             print(merge.run(conn))
         else:

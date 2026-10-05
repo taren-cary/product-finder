@@ -25,33 +25,52 @@ from core.steps import StepStopped
 
 log = logging.getLogger(__name__)
 
-CHARS_PER_PART = 90_000   # ~22k tokens of transcript per request
+CHARS_PER_PART = 40_000   # ~10k tokens (~10 minutes of talking) per request, so nothing gets skimmed
 
-# Measured on 13 videos (2026-10-04), normal price: about 1.9 cents per video
-# (instructions + Claude's answer) plus $0.48 per million transcript characters.
-# The Batch API charges half.
-USD_PER_VIDEO = 0.019
-USD_PER_CHAR = 0.48e-6
+# Measured with the comprehensive instructions (version 2) on 4 videos
+# (2026-10-05), normal price: about 1.5 cents per video plus $2.40 per million
+# transcript characters. The Batch API charges half.
+USD_PER_VIDEO = 0.015
+USD_PER_CHAR = 2.4e-6
 BATCH_DISCOUNT = 0.5
 
 
 def estimated_cost(transcript_chars: int, videos: int = 1) -> float:
     return videos * USD_PER_VIDEO + (transcript_chars or 0) * USD_PER_CHAR
 
-PROMPT = """You extract practical knowledge from YouTube videos about TikTok Shop, for a founder who will sell on TikTok Shop (and may also do affiliate marketing).
+# Bump when the instructions change; each item and video records which version made it.
+PROMPT_VERSION = 2
 
-From the transcript, list every concrete, usable piece of advice: a tip, a step, a rule or policy, a number or benchmark, a tool, a warning, or a mistake to avoid. Each claim should be self-contained and specific enough to act on ("Send free samples to 50-100 creators in your first two weeks; expect about 1 in 10 to post", not "samples are important").
+PROMPT = """You are building a comprehensive knowledge base for a founder who is about to start selling on TikTok Shop (and may also do TikTok Shop affiliate marketing). Your job is to capture EVERYTHING in this YouTube video that could possibly be valuable to them. Missing something useful is much worse than including something minor.
 
-Skip: greetings, hype, income screenshots without a method, requests to like/subscribe, course or coaching pitches, and anything not about TikTok Shop selling, affiliate marketing or the products/content around them.
+Go through the transcript from start to finish and record every item of value, including:
+- tips, tactics, rules of thumb, and step-by-step processes (keep every step)
+- TikTok Shop rules, policies, fees, requirements and account-health issues
+- numbers and benchmarks: commission rates, conversion rates, prices, margins, costs, posting volume, sample counts, timelines, revenue figures, follower counts, with their context
+- hooks, scripts, captions, video structures, phrases and outreach messages: put the speaker's EXACT words in quote
+- case studies and real examples: who did what, with which product/brand, and what result
+- specific products, brands, niches, suppliers, agencies and tools mentioned, and what was said about them
+- warnings, mistakes, things that stopped working, scams and myths
+- strategies, frameworks and ways of thinking about the business
+- trends and predictions about where TikTok Shop is heading
+- opinions and debates, especially where the speaker disagrees with common advice
+- general e-commerce, marketing, branding, sourcing, money or business advice that a TikTok Shop seller could use, even if TikTok Shop isn't mentioned
 
-For each claim:
+Rules:
+- One item per distinct piece of knowledge. Don't merge separate points into one item; don't split one point into many.
+- Make each item self-contained and specific: someone reading it alone should understand and be able to use it. Include names, numbers, and conditions.
+- Use quote for the speaker's exact words whenever the wording itself is useful (hooks, scripts, memorable rules, claims with numbers). Otherwise leave quote empty.
+- Only skip things with no value at all: greetings, sponsor reads, requests to like/subscribe, pitches for the creator's own course, and small talk with no information in it.
+- If the video truly contains nothing of value, return an empty list.
+
+For each item:
+- kind: one of the kinds listed below.
 - topic: one of the topics listed below (pick the closest).
 - audience: "seller", "affiliate", or "both".
-- claim: one sentence, specific.
-- details: optional extra context, numbers or conditions (empty string if none).
-- start_s: the timestamp (in seconds) where it's said, from the [seconds] markers.
-
-If the video contains no usable advice, return an empty list."""
+- claim: the knowledge, as one or two clear sentences.
+- details: extra context, numbers, steps or conditions (empty string if none).
+- quote: the speaker's exact words when useful (empty string if not).
+- start_s: the timestamp (in seconds) where it's said, from the [seconds] markers."""
 
 SCHEMA = {
     "type": "object",
@@ -61,13 +80,15 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "kind": {"type": "string"},
                     "topic": {"type": "string"},
                     "audience": {"type": "string", "enum": ["seller", "affiliate", "both"]},
                     "claim": {"type": "string"},
                     "details": {"type": "string"},
+                    "quote": {"type": "string"},
                     "start_s": {"type": "integer"},
                 },
-                "required": ["topic", "audience", "claim", "details", "start_s"],
+                "required": ["kind", "topic", "audience", "claim", "details", "quote", "start_s"],
                 "additionalProperties": False,
             },
         },
@@ -111,13 +132,23 @@ def _system() -> str:
     return PROMPT + "\n\nTopics:\n" + "\n".join(f"- {t}" for t in settings["knowledge"]["topics"])
 
 
+def _schema() -> dict:
+    """SCHEMA, with kind and topic limited to the lists in config.yaml."""
+    cfg = settings["knowledge"]
+    item = dict(SCHEMA["properties"]["claims"]["items"])
+    item["properties"] = {**item["properties"],
+                          "kind": {"type": "string", "enum": cfg["kinds"]},
+                          "topic": {"type": "string", "enum": cfg["topics"]}}
+    return {**SCHEMA, "properties": {"claims": {"type": "array", "items": item}}}
+
+
 def _params(v: dict, part: str, system: str) -> dict:
     return {
-        "model": settings["knowledge"]["model"], "max_tokens": 16000, "system": system,
+        "model": settings["knowledge"]["model"], "max_tokens": 20000, "system": system,
         "messages": [{"role": "user", "content":
                       f"Video: {v['title']}\nChannel: {v['channel']}\nUploaded: {v['upload_date']}\n\n"
                       f"Transcript:\n{part}"}],
-        "output_config": {"format": {"type": "json_schema", "schema": SCHEMA}, "effort": "low"},
+        "output_config": {"format": {"type": "json_schema", "schema": _schema()}, "effort": "medium"},
     }
 
 
@@ -128,18 +159,35 @@ def _claims_from(message) -> list[dict]:
 
 
 def _save_claims(conn, video_id: str, claims: list[dict]) -> None:
-    topics = settings["knowledge"]["topics"]
+    topics, kinds = settings["knowledge"]["topics"], settings["knowledge"]["kinds"]
     with conn.cursor() as cur:
         cur.executemany(
             """
-            insert into gapfinder.kb_claims (video_id, topic, audience, claim, details, start_s)
-            values (%s, %s, %s, %s, %s, %s)
+            insert into gapfinder.kb_claims
+                (video_id, kind, topic, audience, claim, details, quote, start_s, prompt_version)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            [(video_id, c["topic"] if c["topic"] in topics else "other", c["audience"],
-              c["claim"][:1000], c["details"][:2000] or None, c["start_s"]) for c in claims],
+            [(video_id, c["kind"] if c["kind"] in kinds else "tip",
+              c["topic"] if c["topic"] in topics else "other", c["audience"],
+              c["claim"][:2000], c["details"][:4000] or None, c["quote"][:4000] or None, c["start_s"],
+              PROMPT_VERSION) for c in claims],
         )
     conn.execute("""update gapfinder.kb_videos set status = 'extracted', extracted_at = now(),
-                    extract_batch_id = null where video_id = %s""", (video_id,))
+                    extract_batch_id = null, prompt_version = %s where video_id = %s""",
+                 (PROMPT_VERSION, video_id))
+
+
+def redo_old_versions(conn) -> int:
+    """Queue videos extracted with older instructions to be extracted again
+    (their old items are deleted). Run only when we've decided to pay for it."""
+    rows = conn.execute(
+        """update gapfinder.kb_videos set status = 'transcribed', extracted_at = null
+           where status = 'extracted' and coalesce(prompt_version, 1) < %s returning video_id""",
+        (PROMPT_VERSION,)).fetchall()
+    ids = [r["video_id"] for r in rows]
+    conn.execute("delete from gapfinder.kb_claims where video_id = any(%s)", (ids,))
+    conn.commit()
+    return len(ids)
 
 
 # --- One request at a time (normal price) -------------------------------------

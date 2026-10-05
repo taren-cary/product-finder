@@ -381,10 +381,29 @@ knowledge:
     - creator outreach and free samples
     - affiliate commissions and programs
     - content and video creation
+    - hooks and scripts
     - live selling
     - ads and GMV Max
     - algorithm and reach
     - scaling and operations
     - customer service and returns
     - tools and software
+    - branding and positioning
+    - case studies and results
+    - trends and predictions
+    - money, legal and taxes
+    - mindset and strategy
     - other
+  kinds:                        # what sort of knowledge each extracted item is
+    - tip
+    - step-by-step process
+    - rule or policy
+    - number or benchmark
+    - hook or script
+    - case study
+    - product or brand example
+    - tool or resource
+    - warning or mistake
+    - strategy or framework
+    - trend or prediction
+    - opinion or debate
