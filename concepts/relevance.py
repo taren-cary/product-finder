@@ -7,7 +7,9 @@ this step sends each concept's search results to Claude (product titles and
 prices, numbered) and asks which ones are NOT this product.
 
 Each product is judged once per concept (gapfinder.concept_product_matches)
-and reused every week after, so later runs only send new products. Features
+and reused every week after, so later runs only send new products. Concepts
+never checked at all come first (after shortlisted ones), so a daily cap spent
+on re-checks can't leave them unfiltered for weeks. Features
 and the dashboard ignore products marked not relevant. Products not judged
 yet still count, so nothing breaks while the filter catches up.
 
@@ -61,7 +63,11 @@ def run(conn, snapshot_date) -> dict:
             where concept_id = c.id order by week_start desc limit 1
         ) w on true
         where c.tiktok_fit is true and c.merged_into_id is null and c.review_status <> 'rejected'
-        order by (c.review_status = 'shortlisted') desc, w.opportunity_score desc nulls last
+        -- Never-checked concepts go before re-checks of new products: their whole
+        -- seller count and revenue is unfiltered, not just a few new listings.
+        order by (c.review_status = 'shortlisted') desc,
+                 exists (select 1 from gapfinder.concept_product_matches m where m.concept_id = c.id),
+                 w.opportunity_score desc nulls last
         """
     ).fetchall()
     judged = {(r["concept_id"], r["product_id"]) for r in conn.execute(
