@@ -8,6 +8,8 @@ TikTok leads; everything else confirms:
                 * sustained_trend_factor
                 * margin_factor                                        # profit per unit (config.yaml "pricing")
                 * market_size_factor                                   # < 1 only for tiny markets
+                * gift_factor                                          # > 1 for giftable, easy-to-demo products
+                * stock_factor                                         # < 1 when no US-warehouse supplier
                 * 100                                                  # readable numbers
 
 where
@@ -16,6 +18,10 @@ where
     outside_demand  = sum of confirmation_weights x rising Google / Amazon / Reddit growth
                       (small weights: they support, they don't lead)
     confirmation_multiplier = 1 + confirmation_bonus x (number of outside sources rising)
+    gift_factor     = gift_bonus when the concept is both giftable and easy to demo
+                      without a face (concepts/gift.py), else 1
+    stock_factor    = no_us_stock_factor when CJ was searched and has no matching
+                      product in a US warehouse (slow shipping), else 1
 
 Only rising growth counts (falling adds 0). Growth is capped at velocity_cap
 and counted on a log scale (ln(1 + growth)), so +300% ranks below +3,000% but a
@@ -81,7 +87,11 @@ def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
     if floor and revenue is not None and float(revenue) < floor:
         market = max(float(revenue), 0.0) / floor
 
-    score = 100 * (tiktok_demand + outside_demand) * confirmation * headroom * sustained * margin * market
+    gift = cfg["gift_bonus"] if row.get("giftable") and row.get("easy_demo") else 1.0
+    stock = cfg["no_us_stock_factor"] if row.get("us_stock") is False else 1.0
+
+    score = (100 * (tiktok_demand + outside_demand) * confirmation * headroom * sustained * margin * market
+             * gift * stock)
     breakdown = {
         "tiktok_rising": {s: round(v, 3) for s, v in tiktok_rising.items()},
         "outside_rising": {s: round(v, 3) for s, v in outside_rising.items()},
@@ -90,6 +100,7 @@ def opportunity(row: dict, cfg: dict) -> tuple[float, dict]:
         "saturation_used": round(sat, 3), "headroom_factor": round(headroom, 3),
         "sustained_used": round(sustained, 3), "margin_factor": margin,
         "market_size_factor": round(market, 3),
+        "gift_factor": gift, "stock_factor": stock,
     }
     return round(score, 3), breakdown
 
@@ -99,7 +110,7 @@ def run(conn, snapshot_date: date) -> dict:
     week = week_start(snapshot_date)
     rows = conn.execute(
         """
-        select w.* from gapfinder.concept_weekly w
+        select w.*, c.giftable, c.easy_demo from gapfinder.concept_weekly w
         join gapfinder.concepts c on c.id = w.concept_id
         where w.week_start = %s and c.merged_into_id is null
           and c.review_status <> 'rejected' and c.tiktok_fit is true

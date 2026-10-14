@@ -30,6 +30,9 @@ collectors:
   kalodata_keywords:
     enabled: true
     schedule: weekly
+  cj:                   # supplier cost + US shipping (free API; needs CJ_API_KEY in .env)
+    enabled: true
+    schedule: weekly
 
 # --- Concept grouping (Claude) ---
 # Groups items from every source into product concepts. Runs daily but only
@@ -42,6 +45,14 @@ concepts:
   max_concepts_in_prompt: 300 # beyond this, only the closest-matching concepts are sent
   max_cost_per_run_usd: 10.00 # stop for the day once this is reached
   audience_backfill: false    # true = also label who existing concepts are for (one-time, ~$1.40)
+
+# --- Gift flag (Claude) ---
+# Labels each TikTok-fit concept: giftable? easy to demo on video with just
+# hands and the product? Uses the concepts model above. The first run labels
+# every existing concept (~$2 one-time), then only new ones.
+gift:
+  max_concepts_per_run: 1500
+  max_cost_per_run_usd: 4.00
 
 # Product types to never treat as products (TikTok Shop prohibited or
 # restricted items). Fill in from TikTok Shop's list; plain words are fine.
@@ -96,12 +107,16 @@ features:
     hashtag_views: 0.15
 
 # --- Price and profit (used by the score's margin factor) ---
-# Until real sourcing costs are added (1688, Phase 2), product cost is
-# estimated as a share of the selling price. Adjust these to your real numbers.
+# When CJ has a matching US-warehouse product, its real cost and shipping are
+# used. Otherwise product cost is estimated as a share of the selling price
+# and shipping as a flat amount. Adjust these to your real numbers.
 pricing:
   price_basis: typical          # typical = what buyers pay on average; floor = lowest competitor price (stricter)
-  tiktok_fee_pct: 0.08          # TikTok Shop referral fee (check your seller center)
-  creator_commission_pct: 0.15  # typical affiliate commission you'd offer creators
+  # Selling on Shopify (Basic plan, Shopify Payments). For TikTok Shop it was
+  # platform_fee_pct 0.08, payment_fee_fixed 0, creator_commission_pct 0.15.
+  platform_fee_pct: 0.029       # card processing: 2.9% of each sale...
+  payment_fee_fixed: 0.30       # ...plus $0.30 per order
+  creator_commission_pct: 0.0   # share of each sale paid to creators/affiliates (0 = none yet)
   product_cost_pct: 0.25        # product + inbound freight as a share of selling price (estimate)
   fulfillment_per_unit: 4.00    # shipping + packing per order, USD
   min_profit_per_unit: 3.00     # at or below this, the score is cut to low_profit_factor
@@ -133,6 +148,11 @@ scoring:
                                # products with few sellers should rank above unchecked ones)
   unknown_sustained: 0.75      # assumed when there's no history yet
   spike_penalty: 0.5           # multiply by this when the rise looks like a one-off spike
+  gift_bonus: 1.15             # x1.15 for products that are giftable AND easy to demo without a face
+                               # (Q4 gift season; set to 1.0 to switch off)
+  no_us_stock_factor: 0.8      # x0.8 when CJ has no matching product in a US warehouse (slow shipping
+                               # closed the TikTok shop). Mild because CJ naming often differs from ours,
+                               # so "no match" isn't proof of no supplier. Unchecked = no change
   min_market_revenue_7d: 5000  # TikTok Shop revenue for the keyword (last 7 days) below this is too
                                # small to matter: the score is scaled down in proportion
                                # ($2,500 keeps half its score, $500 a tenth). 0 = off.
@@ -268,6 +288,21 @@ kalodata_keywords:
   variants_per_concept: 2     # ...up to 2 each (0.1 credits per search: ~2-4 credits/week)
   merge_variants: true        # merge those results into the seller count. Safe now: the relevance
                               # filter drops results that are a different product.
+
+# --- CJ Dropshipping (supplier cost and US shipping) ---
+# Free API: 1,000 requests a day, 1 per second. Per keyword: 1 search of
+# US-warehouse products + 2 requests per shipping quote. 60 keywords with
+# 3 quotes each = ~420 requests, ~9 minutes.
+cj:
+  max_keywords: 60              # top candidates first (shortlisted, then by score)
+  recheck_weeks: 4              # look a concept up again after this many weeks
+  results_per_keyword: 20       # US-warehouse products per search
+  freight_checks_per_keyword: 3 # shipping quotes for the best few matches...
+  min_word_match: 0.6           # ...whose title has at least 60% of the keyword's words
+  min_us_inventory: 20          # fewer units than this in US warehouses doesn't count as US stock
+  max_requests_per_run: 600     # stay well under the 1,000/day limit
+  max_age_weeks: 8              # use supplier data up to this old
+  default_processing_days: 2    # when CJ doesn't say how long it takes to ship out
 
 # --- Relevance filter (Claude) ---
 # Drops TikTok Shop search results that are a different product before counting

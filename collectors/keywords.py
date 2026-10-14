@@ -11,7 +11,7 @@ TikTok checks (Kalodata keyword search, TikTok hashtags) - the core data:
      Shop discovery lists                    7. everything else, in rotation:
   4. never looked up yet (newest first)         the longest-unchecked first
 
-Google Trends (confirmation only):
+Google Trends (confirmation only) and CJ supplier lookups:
   1. watchlist   2. shortlisted   3. the top-scoring TikTok candidates that
   haven't had a Google check in the last few weeks.
 
@@ -116,12 +116,14 @@ def variant_keywords(conn, top_n: int, per_concept: int, already: set) -> list[s
 
 
 def watch_keywords(conn, limit: int, source: str, key_for, purpose: str = "tiktok",
-                   today: date | None = None) -> list[str]:
+                   today: date | None = None, recheck_weeks: int | None = None) -> list[str]:
     """Up to `limit` keywords to look up, most useful first.
 
     source:   the collector's source name (to see what it already looked up)
     key_for:  keyword -> that collector's request key, e.g. "trends:<kw>"
-    purpose:  "tiktok" (TikTok checks) or "confirm" (Google Trends)
+    purpose:  "tiktok" (TikTok checks) or "confirm" (Google Trends, CJ)
+    recheck_weeks: for "confirm", how often a concept is looked up again
+                   (default: enrichment.google_recheck_weeks)
     """
     cfg = settings["enrichment"]
     today = today or date.today()
@@ -144,7 +146,7 @@ def watch_keywords(conn, limit: int, source: str, key_for, purpose: str = "tikto
     by_score = sorted(fresh_only, key=lambda c: float(c["opportunity_score"] or 0), reverse=True)
 
     if purpose == "confirm":
-        recheck = today - timedelta(weeks=cfg["google_recheck_weeks"])
+        recheck = today - timedelta(weeks=recheck_weeks or cfg["google_recheck_weeks"])
         ordered += [c["kw"] for c in by_score
                     if c["opportunity_score"] is not None and not looked_up_since(c["kw"], recheck)]
     else:

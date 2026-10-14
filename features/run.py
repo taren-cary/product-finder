@@ -41,11 +41,21 @@ Price and profit (so a growing $2.99 product doesn't beat a solid $25 one):
 
   typical_price        What buyers actually pay: revenue / units, last 7 days.
   price_floor          Lowest price among active competitors.
-  est_profit_per_unit  At the typical price, after TikTok fee, creator commission,
-                       product cost and shipping (assumptions in config.yaml).
+  est_profit_per_unit  At the typical price, after payment fees, creator commission,
+                       product cost and shipping. Uses the real CJ supplier cost
+                       and shipping when there's a match; otherwise the
+                       assumptions in config.yaml ("pricing").
   weekly_profit_potential  Profit per unit x an average seller's share of units.
   margin_factor        Scales the score: low profit per unit pushes it down,
                        high profit gives a small boost.
+
+Supplier (CJ Dropshipping, US warehouses only):
+
+  supplier_cost        Cost of the cheapest matching product (the relevance
+  supplier_shipping    filter drops different products), its US-to-US
+  ship_days            shipping and slowest delivery estimate incl. processing.
+  us_stock             A matching product is stocked in a US warehouse
+                       (false = searched, none found; null = not searched).
 
 Checks happen on a rotation (collectors/keywords.py), so growth between two
 checks a few weeks apart is converted to a per-week rate. All thresholds and
@@ -54,12 +64,14 @@ weights are in config.yaml under "features".
 
 import logging
 import math
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 from statistics import mean, median
 
 from psycopg.types.json import Jsonb
 
+from collectors.cj import search_products, word_match
 from collectors.keywords import concept_keyword, merge_keywords, to_hashtag
 from core.config import settings
 
@@ -229,14 +241,63 @@ def saturation(parts: dict, cfg: dict) -> float | None:
     return round(sum(weights[k] * v for k, v in available.items()) / total_weight, 3)
 
 
-def profit_per_unit(price, pcfg: dict) -> float | None:
-    """Estimated profit on one sale at this price, after TikTok's fee, the
-    creator commission, product cost (a share of price until real sourcing
-    costs exist) and shipping/packing. All assumptions are in config.yaml."""
+def profit_per_unit(price, pcfg: dict, supplier: dict | None = None) -> float | None:
+    """Estimated profit on one sale at this price, after the platform/payment
+    fees, the creator commission, product cost and shipping/packing. With a supplier
+    match, its real cost and shipping are used; otherwise product cost is a
+    share of price and shipping a flat amount. Assumptions are in config.yaml."""
     if price is None:
         return None
-    keep = 1 - pcfg["tiktok_fee_pct"] - pcfg["creator_commission_pct"] - pcfg["product_cost_pct"]
-    return round(float(price) * keep - pcfg["fulfillment_per_unit"], 2)
+    keep = 1 - pcfg["platform_fee_pct"] - pcfg["creator_commission_pct"]
+    fixed = pcfg.get("payment_fee_fixed", 0)
+    if supplier:
+        return round(float(price) * keep - fixed - supplier["cost"] - supplier["shipping"], 2)
+    keep -= pcfg["product_cost_pct"]
+    return round(float(price) * keep - fixed - pcfg["fulfillment_per_unit"], 2)
+
+
+def slowest_days(estimate) -> int | None:
+    """A delivery estimate like "2-5" -> 5 (the slowest case)."""
+    numbers = [int(n) for n in re.findall(r"\d+", str(estimate or ""))]
+    return max(numbers) if numbers else None
+
+
+def supplier_stats(keyword: str, products: list[dict], freights: dict, is_excluded,
+                   default_processing_days: int, min_inventory: int = 0, min_word_match: float = 0.0) -> dict:
+    """The cheapest matching CJ product by landed cost (product + shipping).
+
+    keyword:   the concept keyword that was searched
+    products:  that CJ search's product list (US warehouses only)
+    freights:  CJ product id -> stored freight:<pid> payload (from any search)
+    is_excluded: product id -> True if the relevance filter says it's a different product
+    A product counts only if its title has enough of the keyword's words and
+    it has enough US stock; a quote fetched for another concept doesn't make
+    a loosely matched product count here.
+    """
+    matches = [p for p in products if p.get("id") and not is_excluded(str(p["id"]))
+               and (p.get("warehouseInventoryNum") or 0) >= min_inventory
+               and word_match(keyword, p.get("nameEn")) >= min_word_match]
+    best = None
+    for p in matches:
+        f = freights.get(str(p["id"])) or {}
+        price = (f.get("variant") or {}).get("price")
+        quotes = [q for q in f.get("quotes") or [] if q.get("price") is not None]
+        if price is None or not quotes:
+            continue
+        quote = min(quotes, key=lambda q: float(q["price"]))
+        cycle = p.get("deliveryCycle")      # processing time in hours (24/48/72)
+        processing = math.ceil(float(cycle) / 24) if cycle else default_processing_days
+        transit = slowest_days(quote["days"])
+        candidate = {
+            "pid": str(p["id"]), "name": f.get("name") or p.get("nameEn"),
+            "cost": round(float(price), 2), "shipping": round(float(quote["price"]), 2),
+            "carrier": quote["name"],
+            "ship_days": processing + transit if transit is not None else None,
+        }
+        candidate["landed"] = round(candidate["cost"] + candidate["shipping"], 2)
+        if best is None or candidate["landed"] < best["landed"]:
+            best = candidate
+    return {"matches": len(matches), "best": best}
 
 
 def margin_factor(profit, pcfg: dict) -> float:
@@ -485,6 +546,10 @@ def run(conn, snapshot_date: date) -> dict:
     not_relevant = {(r["concept_id"], r["product_id"]) for r in conn.execute(
         "select concept_id, product_id from gapfinder.concept_product_matches where not relevant").fetchall()}
     amazon = _amazon_ranks(conn, cur_start, cur_end, prev_start, prev_end)
+    ccfg = settings["cj"]
+    cj_latest = _latest_raw(conn, ("cj",), snapshot_date - timedelta(weeks=ccfg["max_age_weeks"]), cur_end)
+    freights = {k.removeprefix("freight:"): r["payload"] for (_, k), r in cj_latest.items()
+                if k.startswith("freight:")}
     reddit = _reddit_mentions(conn, snapshot_date)
 
     rows, parts_by_concept = [], {}
@@ -590,10 +655,25 @@ def run(conn, snapshot_date: date) -> dict:
             sustained = 0.5 + 0.5 * g["sustained_weeks"] / 8
             details["sustained_basis"] = "Google Trends"
 
+        # --- Supplier (CJ, US warehouses) ---
+        cj_row = next((cj_latest[("cj", f"search:{k}")] for k in candidates
+                       if ("cj", f"search:{k}") in cj_latest), None)
+        supplier, us_stock = None, None
+        if cj_row:
+            sstats = supplier_stats(cj_row["request_key"].removeprefix("search:"),
+                                    search_products(cj_row["payload"]), freights,
+                                    lambda pid: (c["id"], f"cj:{pid}") in not_relevant,
+                                    ccfg["default_processing_days"], ccfg["min_us_inventory"],
+                                    ccfg["min_word_match"])
+            supplier, us_stock = sstats["best"], sstats["matches"] > 0
+            details["supplier"] = {"checked": str(cj_row["snapshot_date"]),
+                                   "keyword": cj_row["request_key"].removeprefix("search:"),
+                                   "us_matches": sstats["matches"], **(supplier or {})}
+
         # --- Price and profit ---
         pcfg = settings["pricing"]
         price = shop["price_floor"] if pcfg.get("price_basis") == "floor" else shop["typical_price"]
-        profit = profit_per_unit(price, pcfg) if has_shop else None
+        profit = profit_per_unit(price, pcfg, supplier) if has_shop else None
         payout = None
         if profit is not None and profit > 0 and shop["units"]:
             share = min(pcfg["max_assumed_share"], 1 / (shop["active_sellers"] + 1))
@@ -607,6 +687,10 @@ def run(conn, snapshot_date: date) -> dict:
             "units_7d": shop["units"] if has_shop else None,
             "est_profit_per_unit": profit,
             "weekly_profit_potential": payout,
+            "supplier_cost": supplier["cost"] if supplier else None,
+            "supplier_shipping": supplier["shipping"] if supplier else None,
+            "ship_days": supplier["ship_days"] if supplier else None,
+            "us_stock": us_stock,
             "margin_factor": margin_factor(profit, pcfg),
             "velocity_tiktokshop": v_shop, "velocity_shopvideos": v_videos, "velocity_tiktok": v_tiktok,
             "tiktok_momentum": momentum, "on_tiktok_lists": listed > 0,

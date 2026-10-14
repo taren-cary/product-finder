@@ -21,6 +21,7 @@ KEYS = {
     "DATABASE_URL": "required now",
     "DATABASE_PASSWORD": "required now",
     "KALODATA_API_KEY": "needed for the Kalodata collector",
+    "CJ_API_KEY": "needed for CJ supplier costs and US shipping",
     "APIFY_API_TOKEN": "needed for Amazon / TikTok / Creative Center / Trends",
     "REDDIT_CLIENT_ID": "needed for the Reddit collector",
     "REDDIT_CLIENT_SECRET": "needed for the Reddit collector",

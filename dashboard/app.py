@@ -67,7 +67,7 @@ def opportunities() -> None:
     search = f[5].text_input("Search", placeholder="e.g. lamp, pets")
 
     df = data.ranking(week)
-    g = st.columns([1.1, 1.1, 1.5, 1.4, 1.4, 1.4, 1.1])
+    g = st.columns([1.1, 1.1, 1.5, 1.4, 1.4, 1.4, 1.1, 1.1])
     only_data = g[0].toggle("Only concepts with data", value=True,
                             help="Concepts not looked up yet have no score.")
     only_fit = g[1].toggle("Only TikTok-fit", value=True,
@@ -78,6 +78,8 @@ def opportunities() -> None:
                                help="Only concepts whose TikTok Shop sellers and creators have been checked.")
     women_only = g[6].toggle("👩 Women only", value=False,
                              help="Products made for women or bought mostly by women.")
+    gifts_only = g[7].toggle("🎁 Gift-ready", value=False,
+                             help="Giftable AND easy to show on video with just hands and the product.")
     min_profit = g[5].selectbox("Min. est. profit / unit", [0, 3, 5, 10, 20], index=2,
                                 format_func=lambda v: "Any" if v == 0 else f"${v}",
                                 help="Estimated profit per sale at the typical price (assumptions in config.yaml, 'pricing').")
@@ -93,6 +95,8 @@ def opportunities() -> None:
         if not len(view) and df["audience"].isna().all():
             st.info("Concepts haven't been labeled by audience yet, so nothing shows here. "
                     "They get labeled in the TikTok-fit check.")
+    if gifts_only:
+        view = view[view["giftable"].fillna(False).astype(bool) & view["easy_demo"].fillna(False).astype(bool)]
     if only_data:
         view = view[view["has_data"].fillna(False)]
     if only_lists:
@@ -139,7 +143,9 @@ def opportunities() -> None:
     st.caption(f"{len(view)} concepts shown. Select rows to open one or change their status. "
                "Scores firm up after 2–4 weeks of history.")
     view["audience_label"] = view["audience"].map(AUDIENCES)
-    columns = ["rank", "name", "audience_label", "opportunity_score", "typical_price", "price_floor", "est_profit_per_unit",
+    view["gift_ready"] = view["giftable"].fillna(False).astype(bool) & view["easy_demo"].fillna(False).astype(bool)
+    columns = ["rank", "name", "audience_label", "gift_ready", "opportunity_score", "typical_price", "price_floor",
+               "est_profit_per_unit", "supplier_cost", "supplier_shipping", "ship_days", "us_stock",
                "weekly_profit_potential", "matching_products", "tiktok_momentum", "velocity_tiktokshop",
                "velocity_shopvideos", "tiktok_saturation", "sellers", "creators", "new_product_share",
                "shop_revenue_7d", "revenue_per_seller", "confirmations",
@@ -157,6 +163,17 @@ def opportunities() -> None:
             "rank": st.column_config.NumberColumn("Rank", width="small"),
             "name": st.column_config.TextColumn("Concept", width="medium"),
             "audience_label": st.column_config.TextColumn("For", width="small"),
+            "gift_ready": st.column_config.CheckboxColumn("🎁 Gift", width="small",
+                                                          help="Giftable and easy to demo without a face."),
+            "supplier_cost": st.column_config.NumberColumn("CJ cost", format="dollar",
+                                                           help="Cheapest matching CJ product in a US warehouse."),
+            "supplier_shipping": st.column_config.NumberColumn("CJ shipping", format="dollar",
+                                                               help="US-to-US shipping for that product."),
+            "ship_days": st.column_config.NumberColumn("Ship days", width="small",
+                                                       help="Slowest estimate, order to delivery, incl. processing."),
+            "us_stock": st.column_config.CheckboxColumn("US stock", width="small",
+                                                        help="A matching CJ product is in a US warehouse. "
+                                                             "Blank = not checked yet."),
             "opportunity_score": st.column_config.NumberColumn("Score", format="%.1f",
                 help="TikTok momentum (+ outside demand) x confirmations x TikTok headroom x steadiness."),
             "typical_price": st.column_config.NumberColumn("Typical price", format="dollar",
@@ -164,7 +181,7 @@ def opportunities() -> None:
             "price_floor": st.column_config.NumberColumn("Lowest competitor", format="dollar",
                 help="Lowest price among active sellers: the price you'd be up against."),
             "est_profit_per_unit": st.column_config.NumberColumn("Est. profit / unit", format="dollar",
-                help="At the typical price, after TikTok fee, creator commission, product cost and shipping (config.yaml 'pricing')."),
+                help="At the typical price, after payment fees, product cost and shipping (config.yaml 'pricing')."),
             "weekly_profit_potential": st.column_config.NumberColumn("Weekly payout potential", format="dollar",
                 help="Est. profit per unit x an average seller's share of this week's units."),
             "matching_products": st.column_config.NumberColumn("Matching listings", width="small",
@@ -301,9 +318,26 @@ def concept_details() -> None:
     p[0].metric("Typical price", money(latest.get("typical_price")), help="What buyers pay on average on TikTok Shop")
     p[1].metric("Lowest competitor", money(latest.get("price_floor")))
     p[2].metric("Est. profit / unit", money(latest.get("est_profit_per_unit")),
-                help="After TikTok fee, creator commission, product cost and shipping (config.yaml 'pricing')")
+                help="After payment fees, product cost and shipping. Uses the CJ supplier's "
+                     "real cost and shipping when there's a match, otherwise config.yaml 'pricing'.")
     p[3].metric("Weekly payout potential", money(latest.get("weekly_profit_potential")),
                 help="Est. profit per unit x an average seller's share of this week's units")
+    gift_known = c.get("giftable") is not None and not pd.isna(c.get("giftable"))
+    if gift_known:
+        st.markdown(("🎁 **Giftable**" if c["giftable"] else "Not much of a gift") + " · "
+                    + ("🎬 **Easy to demo without a face**" if c.get("easy_demo") else "Needs a person on camera")
+                    + f" — {c.get('gift_reason') or ''}")
+    supplier = (latest.get("details") or {}).get("supplier")
+    if supplier and supplier.get("pid"):
+        st.markdown(
+            f"**CJ supplier (US warehouse):** {supplier.get('name') or ''} — cost {money(supplier['cost'])} "
+            f"+ shipping {money(supplier['shipping'])} via {supplier.get('carrier') or '?'}, "
+            f"about {supplier.get('ship_days') or '?'} days to deliver · "
+            f"[open on CJ](https://cjdropshipping.com/product/-p-{supplier['pid']}.html) "
+            f"· checked {supplier.get('checked')}")
+    elif supplier:
+        st.warning(f"No matching CJ product in a US warehouse (searched “{supplier.get('keyword')}” on "
+                   f"{supplier.get('checked')}). Slow shipping risk.")
     if latest.get("spike_risk"):
         st.warning("⚠ Spike risk: the recent Google rise looks like a one-off spike, not a steady climb.")
 

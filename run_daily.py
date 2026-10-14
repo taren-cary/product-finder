@@ -17,12 +17,14 @@ from datetime import date, timedelta
 
 from collectors.amazon import AmazonBestsellersCollector
 from collectors.base import run_collector
+from collectors.cj import CJCollector
 from collectors.google_trends import GoogleTrendsCollector
 from collectors.kalodata import KalodataCollector
 from collectors.kalodata_keywords import KalodataKeywordsCollector
 from collectors.reddit import RedditCollector
 from collectors.tiktok import TikTokCollector
 from concepts import fit as tiktok_fit
+from concepts import gift
 from concepts import refine as refine_keywords
 from concepts import relevance
 from concepts import run as concepts
@@ -40,9 +42,10 @@ log = logging.getLogger("run_daily")
 #   1. discovery collectors    - find candidate products (TikTok Shop lists,
 #                                Amazon Best Sellers, Reddit)
 #   2. steps                   - raw data -> items -> concepts -> TikTok-fit verdict
-#                                -> narrow any keyword that was too broad
+#                                -> gift flag -> narrow any keyword that was too broad
 #   3. TikTok collectors       - look up TikTok-fit concepts on TikTok Shop and TikTok,
-#                                then drop search results that are a different product
+#                                and their supplier cost on CJ, then drop search
+#                                results that are a different product
 #   4. score                   - weekly metrics + a first opportunity score
 #   5. confirmation collectors - Google Trends for the top TikTok candidates
 #   6. score again             - final metrics and score with the confirmations
@@ -57,12 +60,14 @@ STEPS = [
     ("normalize", normalize.run),
     ("concepts", concepts.run),
     ("tiktok_fit", tiktok_fit.run),
+    ("gift", gift.run),                         # giftable? easy to demo without a face?
     ("refine_keywords", refine_keywords.run),   # narrow keywords that were too broad last check
 ]
 
 TIKTOK_COLLECTORS = [
     KalodataKeywordsCollector,
     TikTokCollector,
+    CJCollector,          # supplier cost + US shipping; before relevance, which also filters its results
 ]
 
 SCORING_STEPS = [

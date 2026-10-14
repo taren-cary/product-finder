@@ -1,7 +1,7 @@
 """Relevance filter: keep only the TikTok Shop products that really are the concept.
 
 A keyword search for "crevice cleaning brush" also returns a window blinds
-brush; "vacuum wine stopper" also returns electric wine openers. Counting
+brush (on TikTok Shop and on the CJ supplier search alike); "vacuum wine stopper" also returns electric wine openers. Counting
 those inflates seller counts, prices and payouts. After the TikTok checks,
 this step sends each concept's search results to Claude (product titles and
 prices, numbered) and asks which ones are NOT this product.
@@ -22,6 +22,7 @@ from datetime import timedelta
 
 import anthropic
 
+from collectors.cj import search_products
 from collectors.keywords import merge_keywords
 from concepts.run import _cost
 from core.config import settings
@@ -31,7 +32,7 @@ log = logging.getLogger(__name__)
 
 PROMPT = """You check TikTok Shop search results for a product research tool.
 
-You get one product concept and a numbered list of TikTok Shop products that a keyword search returned for it. Some results are the concept's product; others only share words with it.
+You get one product concept and a numbered list of products (TikTok Shop listings and supplier listings) that a keyword search returned for it. Some results are the concept's product; others only share words with it.
 
 List the numbers of the products that are NOT this product:
 - a different product type (a window blinds brush when the concept is a crevice cleaning brush; an electric wine opener when the concept is a vacuum wine stopper),
@@ -124,19 +125,29 @@ def _unjudged_products(conn, concept, since, judged) -> list[dict]:
     keywords = merge_keywords(concept)
     if concept.get("keyword_before_refinement"):
         keywords.append(concept["keyword_before_refinement"])
-    keys = [f"products:{k}" for k in keywords]
+    keys = [f"products:{k}" for k in keywords] + [f"search:{k}" for k in keywords]
     rows = conn.execute(
         """
-        select distinct on (request_key) payload
+        select distinct on (source, request_key) source, payload
         from gapfinder.raw_responses
-        where source = 'kalodata_keywords' and request_key = any(%s) and snapshot_date >= %s
-        order by request_key, snapshot_date desc
+        where ((source = 'kalodata_keywords' and request_key like 'products:%%')
+               or (source = 'cj' and request_key like 'search:%%'))
+          and request_key = any(%s) and snapshot_date >= %s
+        order by source, request_key, snapshot_date desc
         """,
         (keys, since),
     ).fetchall()
     out, seen = [], set()
     for r in rows:
-        for p in r["payload"].get("data") or []:
+        if r["source"] == "cj":
+            # Supplier listings, judged the same way; ids are prefixed so they
+            # can't collide with TikTok Shop product ids.
+            products = [{"product_id": f"cj:{p.get('id')}", "product_name": p.get("nameEn"),
+                         "unit_price": p.get("nowPrice") or p.get("sellPrice")}
+                        for p in search_products(r["payload"]) if p.get("id")]
+        else:
+            products = r["payload"].get("data") or []
+        for p in products:
             pid = str(p.get("product_id") or "")
             if pid and pid not in seen and (concept["id"], pid) not in judged:
                 seen.add(pid)

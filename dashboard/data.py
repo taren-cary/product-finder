@@ -41,6 +41,8 @@ def ranking(week: date) -> pd.DataFrame:
         """
         select c.id, c.name, c.category, c.keywords, c.review_status, c.created_at::date as first_spotted,
                c.tiktok_fit, c.tiktok_fit_reason, c.audience,
+               c.giftable, c.easy_demo, c.gift_reason,
+               w.supplier_cost, w.supplier_shipping, w.ship_days, w.us_stock,
                w.rank, w.opportunity_score, w.demand_breadth, w.outside_velocity,
                w.tiktok_momentum, w.velocity_shopvideos, w.confirmations, w.on_tiktok_lists,
                w.typical_price, w.price_floor, w.est_profit_per_unit, w.weekly_profit_potential,
