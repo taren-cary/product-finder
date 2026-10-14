@@ -4,7 +4,10 @@ API docs: https://developers.cjdropshipping.com (API 2.0). Free to use; free
 accounts get 1,000 requests a day at 1 request per second. The API key is
 made in CJ under My CJ -> Authorization -> API, and goes in .env as CJ_API_KEY.
 
-For each concept keyword (top candidates first, see collectors/keywords.py):
+For each concept keyword, in this order: shortlisted; then concepts with
+TikTok Shop prices (so profit can be calculated), gift-ready ones first, by
+score; then the rest by score. A concept is looked up again after
+recheck_weeks:
   search:<keyword>  products stocked in a US warehouse that match the keyword
   freight:<pid>     for the best few matches (most of the keyword's words in
                     the title, enough US stock): the first variant's price and
@@ -22,8 +25,10 @@ import time
 
 import requests
 
+from datetime import timedelta
+
 from collectors.base import BaseCollector
-from collectors.keywords import watch_keywords
+from collectors.keywords import concept_keyword
 from core.config import require_env, settings
 from core.retry import PermanentError
 
@@ -104,9 +109,7 @@ class CJCollector(BaseCollector):
     # --- The weekly run ----------------------------------------------------
 
     def collect(self) -> int:
-        keywords = watch_keywords(self.conn, self.cfg["max_keywords"], self.name,
-                                  lambda k: f"search:{k}", purpose="confirm",
-                                  recheck_weeks=self.cfg["recheck_weeks"])
+        keywords = self._keywords()
         if not keywords:
             self.log.info("No keywords to look up yet")
             return 0
@@ -152,6 +155,35 @@ class CJCollector(BaseCollector):
 
         self.log.info("Made %d CJ requests this run", self.requests_made)
         return saved
+
+    def _keywords(self) -> list[str]:
+        """Concept keywords to look up, most useful first, skipping ones
+        searched within recheck_weeks."""
+        rows = self.conn.execute(
+            """
+            select c.name, c.keywords
+            from gapfinder.concepts c
+            left join lateral (
+                select opportunity_score, typical_price from gapfinder.concept_weekly
+                where concept_id = c.id order by week_start desc limit 1
+            ) w on true
+            where c.tiktok_fit is true and c.merged_into_id is null and c.review_status <> 'rejected'
+            order by (c.review_status = 'shortlisted') desc,
+                     (w.typical_price is not null) desc,
+                     coalesce(c.giftable and c.easy_demo, false) desc,
+                     w.opportunity_score desc nulls last
+            """
+        ).fetchall()
+        since = self.snapshot_date - timedelta(weeks=self.cfg["recheck_weeks"])
+        recent = {r["request_key"].removeprefix("search:") for r in self.conn.execute(
+            "select request_key from gapfinder.raw_responses where source = %s and snapshot_date > %s",
+            (self.name, since)).fetchall()}
+        out = []
+        for r in rows:
+            kw = concept_keyword(r)
+            if kw not in recent and kw not in out:
+                out.append(kw)
+        return out[:self.cfg["max_keywords"]]
 
     def _freight(self, pid: str) -> dict:
         """The product's first variant (price, weight) and its US-to-US shipping quotes."""
