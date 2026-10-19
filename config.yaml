@@ -10,6 +10,15 @@
 # up on the next day the pipeline runs.
 weekly_run_day: monday
 
+# Pause: skip these paid collectors and Claude steps until this date
+# (YYYY-MM-DD); they start again on that day, and weekly ones catch up.
+# Leave "until" empty to run everything as normal. Reddit, CJ (both free) and
+# the scoring steps keep running; Reddit items wait for the concepts step.
+pause:
+  until: 2026-12-01     # paused 2026-10-19 while waiting to reapply to TikTok Shop
+  collectors: [kalodata, amazon, google_trends, tiktok, kalodata_keywords]
+  steps: [concepts, tiktok_fit, gift, refine_keywords, relevance]
+
 collectors:
   kalodata:
     enabled: true

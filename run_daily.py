@@ -115,6 +115,18 @@ def is_due(name: str, schedule: str, today: date) -> bool:
     return False
 
 
+def paused(kind: str, name: str, today: date) -> bool:
+    """Is this collector or step ("collectors" / "steps") paused today?
+    See "pause" in config.yaml."""
+    cfg = settings.get("pause") or {}
+    until = cfg.get("until")
+    if not until or name not in (cfg.get(kind) or []):
+        return False
+    if isinstance(until, str):
+        until = date.fromisoformat(until)
+    return today < until
+
+
 def collectors_to_run(only: str | None, today: date, force: bool = False):
     """Pick the collectors that are switched on and due today.
     --only runs that one collector regardless of its switch or schedule.
@@ -127,6 +139,9 @@ def collectors_to_run(only: str | None, today: date, force: bool = False):
     for c in ALL_COLLECTORS:
         cfg = switches.get(c.name) or {}
         if not cfg.get("enabled", False):
+            continue
+        if paused("collectors", c.name, today):
+            log.info("%s: paused until %s", c.name, settings["pause"]["until"])
             continue
         schedule = cfg.get("schedule", "weekly")
         if force:
@@ -177,13 +192,16 @@ def main() -> int:
     # Steps are cheap and only process what's new, so they run every day.
     if not args.only:
         for step_name, step_fn in STEPS:
+            if paused("steps", step_name, today):
+                log.info("%s: paused until %s", step_name, settings["pause"]["until"])
+                continue
             results[step_name] = run_step(step_name, step_fn, run_id, today)
 
     for collector_class in [c for c in collectors if c in TIKTOK_COLLECTORS]:
         results[collector_class.name] = run_collector(collector_class, run_id, today)
 
     # Drop search results that are a different product, then score.
-    if not args.only:
+    if not args.only and not paused("steps", "relevance", today):
         results["relevance"] = run_step("relevance", relevance.run, run_id, today)
 
     # First score from the TikTok data; Google Trends then confirms the top of it.
