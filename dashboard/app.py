@@ -639,7 +639,7 @@ def competitor_stores() -> None:
             st.dataframe(
                 view[["image", "product", "store", "price", "compare_at", "best_seller_rank", "rank_last_week",
                       "ads", "ad_versions", "longest_ad_days", "days_listed", "url"]],
-                hide_index=True, use_container_width=True, height=650,
+                hide_index=True, width="stretch", height=650,
                 column_config={
                     "image": st.column_config.ImageColumn("", width="small"),
                     "product": st.column_config.TextColumn("Product", width="large"),
@@ -670,7 +670,7 @@ def competitor_stores() -> None:
             picked = st.dataframe(
                 view[["domain", "page", "ads", "ads_30d_plus", "longest_ad_days", "versions",
                       "product_count", "status", "link"]],
-                hide_index=True, use_container_width=True, on_select="rerun", selection_mode="multi-row",
+                hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
                 column_config={
                     "domain": "Store", "page": "Facebook page", "ads": "Ads",
                     "ads_30d_plus": st.column_config.NumberColumn("Ads 30+ days"),
@@ -699,7 +699,7 @@ def competitor_stores() -> None:
         st.caption(f"{len(view)} ads")
         st.dataframe(
             view[["image", "page_name", "title", "body", "days_running", "versions", "domain", "link_url", "term"]],
-            hide_index=True, use_container_width=True, height=650,
+            hide_index=True, width="stretch", height=650,
             column_config={
                 "image": st.column_config.ImageColumn("", width="small"),
                 "page_name": "Advertiser", "title": "Headline",
