@@ -7,6 +7,7 @@ Pages:
   Opportunities     ranked concepts, filters, bulk status changes
   Concept details   every source's history side by side, the items behind the
                     concept, and manual fixes (merge, split, edit keywords)
+  Competitor stores products other stores advertise and sell best (Meta ads + store tracker)
   Pipeline health   recent runs, failures, spend, credits left
 """
 
@@ -587,6 +588,131 @@ def knowledge_base() -> None:
                         st.markdown(f"- [{s['title']}]({s['url']}) — {s['channel']}")
 
 
+# =============================================================================
+# Page: Competitor stores
+# =============================================================================
+
+def competitor_stores() -> None:
+    st.title("Competitor stores")
+    st.caption("What experienced sellers are running ads for right now. An ad still running after "
+               "30+ days, with several versions, is almost always profitable: nobody keeps paying for "
+               "one that loses money. Best-seller rank is each store's own Shopify ranking.")
+    window = st.selectbox("Ads seen in the last", [7, 14, 28, 56], index=2,
+                          format_func=lambda d: f"{d} days")
+    ads = data.competitor_ads(window)
+    store_list = data.stores()
+    snaps = data.store_snapshots()
+    if not len(ads):
+        st.info("No ads collected yet. The Meta ads collector runs weekly (Mondays).")
+        return
+
+    t = st.columns(4)
+    t[0].metric("Ads seen", f"{len(ads):,}")
+    t[1].metric("Ads running 30+ days", f"{int((ads['days_running'] >= 30).sum()):,}")
+    t[2].metric("Stores found", len(store_list))
+    t[3].metric("Shopify stores tracked", int((store_list["status"] == "tracking").sum()) if len(store_list) else 0)
+
+    tab_products, tab_stores, tab_ads = st.tabs(["🛍️ Products", "🏪 Stores", "📣 Ads"])
+
+    with tab_products:
+        prods = data.competitor_products(ads, snaps)
+        if not len(prods):
+            st.info("No store products yet. The store tracker checks stores after the Meta ads run.")
+        else:
+            f = st.columns([1, 1, 1, 2])
+            min_days = f[0].selectbox("Longest ad at least", [0, 7, 14, 30, 60], index=0,
+                                      format_func=lambda d: "Any" if d == 0 else f"{d} days")
+            only_ads = f[1].toggle("Only advertised products", value=False)
+            price = f[2].slider("Price", 0, 300, (0, 300), 5)
+            search = f[3].text_input("Search", key="cs_search", placeholder="e.g. necklace, hair")
+            view = prods.copy()
+            if only_ads:
+                view = view[view["ads"].notna()]
+            if min_days:
+                view = view[view["longest_ad_days"].fillna(-1) >= min_days]
+            view = view[view["price"].fillna(0).between(*price)]
+            if search:
+                view = view[view["product"].fillna("").str.contains(search, case=False)]
+            view = view.sort_values(["longest_ad_days", "ad_versions", "best_seller_rank"],
+                                    ascending=[False, False, True], na_position="last")
+            st.caption(f"{len(view)} products")
+            st.dataframe(
+                view[["image", "product", "store", "price", "compare_at", "best_seller_rank", "rank_last_week",
+                      "ads", "ad_versions", "longest_ad_days", "days_listed", "url"]],
+                hide_index=True, use_container_width=True, height=650,
+                column_config={
+                    "image": st.column_config.ImageColumn("", width="small"),
+                    "product": st.column_config.TextColumn("Product", width="large"),
+                    "store": "Store",
+                    "price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "compare_at": st.column_config.NumberColumn("Was", format="$%.2f",
+                                                                help="The crossed-out 'compare at' price."),
+                    "best_seller_rank": st.column_config.NumberColumn(
+                        "Best-seller #", help="Rank in the store's own best-selling sort."),
+                    "rank_last_week": st.column_config.NumberColumn("Last week #"),
+                    "ads": st.column_config.NumberColumn("Ads", help="Active ads linking straight to this product."),
+                    "ad_versions": st.column_config.NumberColumn(
+                        "Ad versions", help="Ads plus the near-identical copies Meta groups with them."),
+                    "longest_ad_days": st.column_config.NumberColumn("Longest ad (days)"),
+                    "days_listed": st.column_config.NumberColumn("Days listed"),
+                    "url": st.column_config.LinkColumn("Link", display_text="open"),
+                },
+            )
+
+    with tab_stores:
+        scores = data.store_scores(ads, store_list)
+        if len(scores):
+            st.caption("Sorted by ads running 30+ days, then the longest-running ad.")
+            show = st.multiselect("Status", ["tracking", "new", "not_shopify", "unreachable", "ignored"],
+                                  default=["tracking", "new"])
+            view = scores[scores["status"].isin(show)]
+            view = view.assign(link="https://" + view["domain"])
+            picked = st.dataframe(
+                view[["domain", "page", "ads", "ads_30d_plus", "longest_ad_days", "versions",
+                      "product_count", "status", "link"]],
+                hide_index=True, use_container_width=True, on_select="rerun", selection_mode="multi-row",
+                column_config={
+                    "domain": "Store", "page": "Facebook page", "ads": "Ads",
+                    "ads_30d_plus": st.column_config.NumberColumn("Ads 30+ days"),
+                    "longest_ad_days": st.column_config.NumberColumn("Longest ad (days)"),
+                    "versions": st.column_config.NumberColumn("Ad versions"),
+                    "product_count": st.column_config.NumberColumn("Products"),
+                    "status": "Status",
+                    "link": st.column_config.LinkColumn("Site", display_text="open"),
+                },
+            )
+            chosen = list(view.iloc[picked.selection.rows]["domain"]) if picked.selection.rows else []
+            if chosen and st.button(f"Ignore {len(chosen)} store(s)",
+                                    help="Hide them here and stop checking them (not a real competitor)."):
+                data.set_store_status(chosen, "ignored")
+                st.rerun()
+
+    with tab_ads:
+        f = st.columns([1, 2])
+        min_days = f[0].selectbox("Running at least", [0, 14, 30, 60, 90], index=2, key="ads_days",
+                                  format_func=lambda d: "Any" if d == 0 else f"{d} days")
+        term = f[1].multiselect("Search term", sorted(ads["term"].unique()))
+        view = ads[ads["days_running"].fillna(-1) >= min_days]
+        if term:
+            view = view[view["term"].isin(term)]
+        view = view.sort_values(["days_running", "versions"], ascending=False)
+        st.caption(f"{len(view)} ads")
+        st.dataframe(
+            view[["image", "page_name", "title", "body", "days_running", "versions", "domain", "link_url", "term"]],
+            hide_index=True, use_container_width=True, height=650,
+            column_config={
+                "image": st.column_config.ImageColumn("", width="small"),
+                "page_name": "Advertiser", "title": "Headline",
+                "body": st.column_config.TextColumn("Ad text", width="large"),
+                "days_running": st.column_config.NumberColumn("Days running"),
+                "versions": st.column_config.NumberColumn("Versions"),
+                "domain": "Store",
+                "link_url": st.column_config.LinkColumn("Landing page", display_text="open"),
+                "term": "Found by",
+            },
+        )
+
+
 def kalodata_balance() -> str:
     r = requests.get("https://www.kalodata.com/openapi/v1/credit/balance",
                      headers={"X-API-Key": require_env("KALODATA_API_KEY")}, timeout=20)
@@ -657,4 +783,5 @@ opportunities_page = st.Page(opportunities, title="Opportunities", icon="📈", 
 concept_page = st.Page(concept_details, title="Concept details", icon="🔎", url_path="concept")
 health_page = st.Page(pipeline_health, title="Pipeline health", icon="🩺", url_path="health")
 knowledge_page = st.Page(knowledge_base, title="Knowledge base", icon="📚", url_path="knowledge")
-st.navigation([opportunities_page, concept_page, knowledge_page, health_page]).run()
+competitors_page = st.Page(competitor_stores, title="Competitor stores", icon="🏪", url_path="competitors")
+st.navigation([opportunities_page, concept_page, competitors_page, knowledge_page, health_page]).run()

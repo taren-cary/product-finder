@@ -461,3 +461,119 @@ def add_kb_channel(info: dict) -> None:
         """,
         (info["channel_id"], info["name"], info["url"]),
     ))
+
+
+# --- Competitor stores (Meta ads + store tracker) ---------------------------
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def competitor_ads(days: int = 28) -> pd.DataFrame:
+    """Every ad seen in the last `days` days, one row per ad (latest sighting),
+    with how long it had been running when last seen."""
+    rows = _df(
+        """
+        select snapshot_date, request_key, payload from gapfinder.raw_responses
+        where source = 'meta_ads' and snapshot_date > current_date - %s
+        order by snapshot_date
+        """,
+        (days,),
+    )
+    ads = {}
+    for _, r in rows.iterrows():
+        for ad in r["payload"].get("ads") or []:
+            ads[ad["ad_id"]] = {**ad, "seen": r["snapshot_date"], "term": r["request_key"].removeprefix("search:")}
+    df = pd.DataFrame(ads.values())
+    if not len(df):
+        return df
+    df["days_running"] = (pd.to_datetime(df["seen"]) - pd.to_datetime(df["start_date"])).dt.days
+    return df
+
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def stores() -> pd.DataFrame:
+    return _df("select * from gapfinder.stores order by first_seen desc, domain")
+
+
+@st.cache_data(ttl=CACHE_SECONDS)
+def store_snapshots() -> pd.DataFrame:
+    """Each tracked store's two most recent weekly checks (products + best sellers)."""
+    return _df(
+        """
+        select request_key, snapshot_date, payload from (
+            select request_key, snapshot_date, payload,
+                   row_number() over (partition by request_key order by snapshot_date desc) as n
+            from gapfinder.raw_responses where source = 'stores'
+        ) x where n <= 2
+        """
+    )
+
+
+def store_scores(ads: pd.DataFrame, store_list: pd.DataFrame) -> pd.DataFrame:
+    """One row per store: how seriously it advertises. Long-running ads and
+    many ad versions are what experienced sellers look like."""
+    if not len(ads):
+        return pd.DataFrame()
+    a = ads[ads["domain"].notna()]
+    g = a.groupby("domain").agg(
+        page=("page_name", "first"), ads=("ad_id", "nunique"), versions=("versions", "sum"),
+        longest_ad_days=("days_running", "max"),
+        ads_30d_plus=("days_running", lambda s: int((s >= 30).sum())),
+    ).reset_index()
+    g = g.merge(store_list[["domain", "status", "product_count"]], on="domain", how="left")
+    return g.sort_values(["ads_30d_plus", "longest_ad_days", "versions"], ascending=False)
+
+
+def competitor_products(ads: pd.DataFrame, snaps: pd.DataFrame) -> pd.DataFrame:
+    """Products at tracked stores that are in the store's best sellers or have
+    ads pointing straight at them, with their ad record attached."""
+    if not len(snaps):
+        return pd.DataFrame()
+    by_product = pd.DataFrame()
+    if len(ads):
+        a = ads[ads["domain"].notna() & ads["handle"].notna()]
+        if len(a):
+            by_product = a.groupby(["domain", "handle"]).agg(
+                ads=("ad_id", "nunique"), ad_versions=("versions", "sum"),
+                longest_ad_days=("days_running", "max"), ad_text=("title", "first"),
+            ).reset_index()
+
+    snaps = snaps.sort_values("snapshot_date")
+    rows = []
+    for domain, group in snaps.groupby("request_key"):
+        domain = domain.removeprefix("store:")
+        latest = group.iloc[-1]
+        prev = group.iloc[0] if len(group) > 1 else None
+        best = latest["payload"].get("best_sellers") or []
+        prev_best = (prev["payload"].get("best_sellers") or []) if prev is not None else []
+        advertised = set(by_product.loc[by_product["domain"] == domain, "handle"]) if len(by_product) else set()
+        for p in latest["payload"].get("products") or []:
+            h = p["handle"]
+            if h not in best and h not in advertised:
+                continue
+            rows.append({
+                "image": p.get("image"),
+                "product": p.get("title"),
+                "store": domain,
+                "price": p.get("price"),
+                "compare_at": p.get("compare_at"),
+                "best_seller_rank": best.index(h) + 1 if h in best else None,
+                "rank_last_week": prev_best.index(h) + 1 if h in prev_best else None,
+                "listed_since": (p.get("published_at") or p.get("created_at") or "")[:10] or None,
+                "url": f"https://{domain}/products/{h}",
+                "domain": domain, "handle": h,
+            })
+    df = pd.DataFrame(rows)
+    if not len(df):
+        return df
+    if len(by_product):
+        df = df.merge(by_product, on=["domain", "handle"], how="left")
+    else:
+        df[["ads", "ad_versions", "longest_ad_days", "ad_text"]] = None
+    df["days_listed"] = (pd.Timestamp(date.today()) - pd.to_datetime(df["listed_since"], errors="coerce")).dt.days
+    return df
+
+
+def set_store_status(domains: list[str], status: str) -> None:
+    _write(lambda conn: conn.execute(
+        "update gapfinder.stores set status = %s, updated_at = now() where domain = any(%s)",
+        (status, domains),
+    ))

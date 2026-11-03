@@ -21,7 +21,9 @@ from collectors.cj import CJCollector
 from collectors.google_trends import GoogleTrendsCollector
 from collectors.kalodata import KalodataCollector
 from collectors.kalodata_keywords import KalodataKeywordsCollector
+from collectors.meta_ads import MetaAdsCollector
 from collectors.reddit import RedditCollector
+from collectors.stores import StoreTrackerCollector
 from collectors.tiktok import TikTokCollector
 from concepts import fit as tiktok_fit
 from concepts import gift
@@ -49,6 +51,8 @@ log = logging.getLogger("run_daily")
 #   4. score                   - weekly metrics + a first opportunity score
 #   5. confirmation collectors - Google Trends for the top TikTok candidates
 #   6. score again             - final metrics and score with the confirmations
+#   7. competitor stores       - Meta ads, then the stores behind them (dashboard
+#                                page "Competitor stores"; not part of the score)
 # Switch collectors on/off and set their schedule in config.yaml.
 DISCOVERY_COLLECTORS = [
     KalodataCollector,
@@ -79,7 +83,13 @@ CONFIRMATION_COLLECTORS = [
     GoogleTrendsCollector,
 ]
 
-ALL_COLLECTORS = DISCOVERY_COLLECTORS + TIKTOK_COLLECTORS + CONFIRMATION_COLLECTORS
+# Meta ads find the stores, so they run first.
+STORE_COLLECTORS = [
+    MetaAdsCollector,
+    StoreTrackerCollector,
+]
+
+ALL_COLLECTORS = DISCOVERY_COLLECTORS + TIKTOK_COLLECTORS + CONFIRMATION_COLLECTORS + STORE_COLLECTORS
 
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -216,6 +226,9 @@ def main() -> int:
     if confirming and not args.only:
         for step_name, step_fn in SCORING_STEPS:
             results[step_name] = run_step(step_name, step_fn, run_id, today)
+
+    for collector_class in [c for c in collectors if c in STORE_COLLECTORS]:
+        results[collector_class.name] = run_collector(collector_class, run_id, today)
 
     # Overall status: success if everything worked, failed if nothing did.
     statuses = set(results.values())

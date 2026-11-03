@@ -42,6 +42,14 @@ collectors:
   cj:                   # supplier cost + US shipping (free API; needs CJ_API_KEY in .env)
     enabled: true
     schedule: weekly
+  # Competitor stores: who runs product ads on Facebook/Instagram, and what
+  # those stores list and sell best. See "meta_ads" and "stores" below.
+  meta_ads:
+    enabled: true
+    schedule: weekly
+  stores:               # free
+    enabled: true
+    schedule: weekly
 
 # --- Concept grouping (Claude) ---
 # Groups items from every source into product concepts. Runs daily but only
@@ -312,6 +320,41 @@ cj:
   max_requests_per_run: 600     # stay well under the 1,000/day limit
   max_age_weeks: 8              # use supplier data up to this old
   default_processing_days: 2    # when CJ doesn't say how long it takes to ship out
+
+# --- Meta Ad Library (via Apify) ---
+# Active US ads for each search term, highest impressions first. Each term
+# costs about ads_per_term x $0.00025-0.0005, so 16 terms x 150 ads is about
+# $0.60-1.20/week. Terms are words that appear in product ads; landing pages
+# on other people's stores become stores for the tracker below.
+meta_ads:
+  ads_per_term: 150
+  max_cost_per_run_usd: 3.00
+  search_terms:
+    - gift for her
+    - perfect gift for her
+    - gift for wife
+    - gift for girlfriend
+    - gift for mom
+    - christmas gift
+    - stocking stuffer
+    - free shipping today
+    - 50% off today
+    - selling out fast
+    - back in stock
+    - tiktok made me buy it
+    - viral beauty
+    - hair tool
+    - skincare device
+    - jewelry gift
+
+# --- Competitor store tracker (free) ---
+# Checks each store from the Meta ads (plus any added below) once a week:
+# its products (Shopify's public /products.json) and its best-seller order.
+stores:
+  max_stores_per_run: 600     # strongest advertisers first; ~1-2 seconds each
+  max_product_pages: 4        # 250 products per page
+  best_sellers_kept: 30
+  manual: []                  # stores to always track, e.g. ["examplestore.com"]
 
 # --- Relevance filter (Claude) ---
 # Drops TikTok Shop search results that are a different product before counting
